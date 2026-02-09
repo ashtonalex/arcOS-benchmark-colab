@@ -22,9 +22,10 @@ class RoGWebQSPLoader:
     - q_entity: Question topic entity
     - a_entity: Answer entity
     - graph: List of [subject, relation, object] triples
+    - choices: List of answer choices (may be null)
     """
 
-    EXPECTED_FIELDS = ["id", "question", "answer", "q_entity", "a_entity", "graph"]
+    EXPECTED_FIELDS = ["id", "question", "answer", "q_entity", "a_entity", "graph", "choices"]
 
     def __init__(self, cache_dir: Optional[Path] = None):
         """
@@ -117,6 +118,7 @@ class RoGWebQSPLoader:
             print(f"Answer: {example['answer']}")
             print(f"Question Entity: {example['q_entity']}")
             print(f"Answer Entity: {example['a_entity']}")
+            print(f"Choices: {example.get('choices')}")
             print(f"Graph: {len(example['graph'])} triples")
             if example['graph']:
                 print(f"  Sample triple: {example['graph'][0]}")
