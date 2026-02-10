@@ -56,9 +56,10 @@ class PCSTSolver:
             print(f"⚠ PCST failed ({e}), falling back to BFS")
             subgraph = self._bfs_fallback(G, valid_seeds, self.budget)
 
-        # Validate result
-        if not self.validate_subgraph(subgraph):
-            print(f"⚠ PCST produced invalid subgraph, falling back to BFS")
+        # Validate result — also check minimum size (PCST can over-prune)
+        min_expected = min(len(valid_seeds), self.budget)
+        if not self.validate_subgraph(subgraph) or len(subgraph) < min_expected:
+            print(f"⚠ PCST result too small ({len(subgraph)} nodes, expected ≥{min_expected}), falling back to BFS")
             subgraph = self._bfs_fallback(G, valid_seeds, self.budget)
 
         # Enforce budget if needed
@@ -118,18 +119,27 @@ class PCSTSolver:
 
         # Ensure seed nodes have non-zero prizes
         for seed in seed_nodes:
-            if seed in node_to_idx and prize_array[node_to_idx[seed]] == 0:
-                prize_array[node_to_idx[seed]] = 1.0
+            if seed in node_to_idx:
+                s_idx = node_to_idx[seed]
+                if prize_array[s_idx] == 0:
+                    prize_array[s_idx] = 1.0
 
         # Convert to numpy arrays
         edges_array = np.array(edges, dtype=np.int32)
         costs_array = np.array(costs, dtype=np.float64)
         prize_array = prize_array.astype(np.float64)
 
-        # Create virtual root (connect to all nodes with high cost to discourage use)
-        root = -1  # Virtual root index
-        num_clusters = 1  # Single connected component
-        pruning = 'gw'  # Goemans-Williamson pruning
+        # Root the tree at the highest-prize seed node (not virtual root)
+        # This guarantees the tree includes at least this seed and expands outward
+        best_seed = max(seed_nodes, key=lambda s: prizes.get(s, 0.0))
+        root = node_to_idx[best_seed]
+
+        # With a fixed root, num_clusters is ignored by pcst_fast
+        num_clusters = 1
+
+        # Use 'none' pruning — GW pruning is too aggressive on sparse graphs
+        # and strips the tree down to 1 node. We rely on budget trimming instead.
+        pruning = 'none'
 
         # Run PCST
         selected_nodes, selected_edges = pcst_fast.pcst_fast(

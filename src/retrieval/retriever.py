@@ -80,7 +80,8 @@ class Retriever:
         prizes = {}
         for rank, (entity, score) in enumerate(top_k_results, start=1):
             # Higher rank (lower number) = higher prize
-            prize = self.config.top_k_entities - rank + 1
+            # Scale by 10 to ensure prizes are significantly larger than edge costs (1.0)
+            prize = (self.config.top_k_entities - rank + 1) * 10.0
             prizes[entity] = float(prize)
 
         # 4. Extract subgraph
