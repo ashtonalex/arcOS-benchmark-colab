@@ -81,7 +81,9 @@ class BenchmarkConfig:
     # ========== Training (Phase 6) ==========
     batch_size: int = 16
     learning_rate: float = 1e-4
+    weight_decay: float = 1e-2
     num_epochs: int = 10
+    patience: int = 5
     gradient_clip: float = 1.0
 
     # ========== Evaluation (Phase 7) ==========
