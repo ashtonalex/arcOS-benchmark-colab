@@ -197,8 +197,8 @@ class PCSTSolver:
 
         print(f"  PCST output: {len(selected_nodes)} nodes, {len(selected_edges)} edges")
 
-        # Convert back to node names
-        selected_node_names = [idx_to_node[i] for i in selected_nodes if i in idx_to_node]
+        # Convert back to node names (cast to int to avoid numpy.int64 dict lookup issues)
+        selected_node_names = [idx_to_node[int(i)] for i in selected_nodes if int(i) in idx_to_node]
 
         if not selected_node_names:
             selected_node_names = valid_seeds_in_local
