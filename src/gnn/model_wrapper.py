@@ -185,10 +185,13 @@ class GNNModel:
             answer_entities = example.get("a_entity", [])
             if isinstance(answer_entities, str):
                 answer_entities = [answer_entities]
+            q_entities = example.get("q_entity", [])
+            if isinstance(q_entities, str):
+                q_entities = [q_entities]
 
-            # Retrieve subgraph
+            # Retrieve subgraph (use topic entity as primary seed)
             try:
-                retrieved = retriever.retrieve(question)
+                retrieved = retriever.retrieve(question, q_entity=q_entities)
 
                 # Convert to PyG Data
                 data = converter.convert(

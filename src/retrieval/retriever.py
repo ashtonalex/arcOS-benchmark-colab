@@ -3,7 +3,8 @@ Retriever orchestration layer.
 """
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
+import math
 import time
 import networkx as nx
 import numpy as np
@@ -63,12 +64,17 @@ class Retriever:
         self.entity_embeddings = entity_embeddings
         self.relation_embeddings = relation_embeddings
 
-    def retrieve(self, question: str) -> RetrievedSubgraph:
+    def retrieve(
+        self, question: str, q_entity: Optional[List[str]] = None
+    ) -> RetrievedSubgraph:
         """
         Main retrieval method: question -> subgraph.
 
         Args:
             question: Natural language question
+            q_entity: Optional list of known topic entity names from the
+                dataset.  When provided these are used as primary seeds,
+                bypassing the k-NN search for seed selection.
 
         Returns:
             RetrievedSubgraph with extracted subgraph and metadata
@@ -78,23 +84,47 @@ class Retriever:
         # 1. Embed query
         query_embedding = self.embedder.embed_texts([question], show_progress=False)[0]
 
-        # 2. k-NN search
+        # 2. k-NN search (always run — used for secondary seeds + prizes)
         top_k_results = self.entity_index.search(query_embedding, k=self.config.top_k_entities)
-        seed_entities = [entity for entity, score in top_k_results]
-        similarity_scores = {entity: score for entity, score in top_k_results}
 
-        # 3. Create prize dictionary using similarity scores (not just rank)
+        # 3. Build seed list — q_entity first (primary), then k-NN (secondary)
+        seed_entities = []
+        similarity_scores = {}
+        q_entity_names = set()
+
+        if q_entity:
+            entities = q_entity if isinstance(q_entity, list) else [q_entity]
+            for entity in entities:
+                if entity in self.unified_graph and entity not in similarity_scores:
+                    seed_entities.append(entity)
+                    similarity_scores[entity] = 1.0
+                    q_entity_names.add(entity)
+
+        for entity, score in top_k_results:
+            if entity not in similarity_scores:
+                seed_entities.append(entity)
+                similarity_scores[entity] = score
+
+        # 4. Prizes — logarithmic scaling to prevent top-rank dominance
+        #
+        #   Old linear:  rank 1 → 150, rank 15 → 10   (15:1 ratio)
+        #   New log:     rank 1 →  55, rank 15 → 14   ( 4:1 ratio)
+        #   q_entity:    fixed 100  (always highest)
         prizes = {}
-        for rank, (entity, score) in enumerate(top_k_results, start=1):
-            # Combine rank-based prize with similarity score
-            # Rank component: higher rank = higher prize (scaled by 10)
-            rank_prize = (self.config.top_k_entities - rank + 1) * 10.0
-            # Score component: similarity score scaled up
-            score_prize = float(score) * 50.0
-            prizes[entity] = rank_prize + score_prize
+        top_k = self.config.top_k_entities
 
-        # 3b. Add prizes for 1-hop neighbors of seed entities
-        # Prize = 5.0 (high enough to justify edge cost of 0.1)
+        # Topic entities get a fixed high prize
+        for entity in q_entity_names:
+            prizes[entity] = 100.0
+
+        # k-NN entities: log-scaled rank prize + similarity prize
+        for rank, (entity, score) in enumerate(top_k_results, start=1):
+            if entity not in prizes:
+                rank_prize = math.log1p(top_k - rank + 1) * 20.0
+                score_prize = max(float(score), 0.0) * 20.0
+                prizes[entity] = rank_prize + score_prize
+
+        # 1-hop neighbor prizes (enough to justify edge cost of 0.1)
         max_neighbors_per_seed = 20
         for seed in seed_entities:
             if seed in self.unified_graph:
@@ -113,7 +143,7 @@ class Retriever:
                         if count >= max_neighbors_per_seed:
                             break
 
-        # 4. Extract subgraph
+        # 5. Extract subgraph
         pcst_used = True
         try:
             subgraph = self.pcst_solver.extract_subgraph(
@@ -130,11 +160,11 @@ class Retriever:
             )
             pcst_used = False
 
-        # 5. Calculate timing
+        # 6. Calculate timing
         end_time = time.time()
         retrieval_time_ms = (end_time - start_time) * 1000
 
-        # 6. Build result
+        # 7. Build result
         result = RetrievedSubgraph(
             subgraph=subgraph,
             question=question,
