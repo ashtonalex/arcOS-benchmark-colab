@@ -16,12 +16,12 @@ from collections import deque
 class PCSTSolver:
     """Extract connected subgraphs using PCST algorithm."""
 
-    def __init__(self, cost: float = 1.0, budget: int = 50, local_budget: int = 300):
+    def __init__(self, cost: float = 0.1, budget: int = 50, local_budget: int = 300):
         """
         Initialize PCST solver.
 
         Args:
-            cost: Edge cost parameter for PCST
+            cost: Edge cost parameter for PCST (default 0.1, low to encourage expansion)
             budget: Maximum nodes in extracted subgraph
             local_budget: Max nodes for BFS localization before PCST
         """
@@ -155,18 +155,19 @@ class PCSTSolver:
         edges_array = np.array(edges, dtype=np.int32)
         costs_array = np.full(len(edges), self.cost, dtype=np.float64)
 
-        # Build prize array
+        # Build prize array — base prize for ALL nodes so intermediates aren't pure cost
         num_nodes = len(nodes)
-        prize_array = np.zeros(num_nodes, dtype=np.float64)
+        base_prize = self.cost * 0.5  # Half edge cost: not free, but worth traversing
+        prize_array = np.full(num_nodes, base_prize, dtype=np.float64)
         for node, prize in prizes.items():
             if node in node_to_idx:
-                prize_array[node_to_idx[node]] = prize
+                prize_array[node_to_idx[node]] = max(prize, base_prize)
 
         # Ensure seed nodes have non-zero prizes
         for seed in seed_nodes:
             if seed in node_to_idx:
                 s_idx = node_to_idx[seed]
-                if prize_array[s_idx] == 0:
+                if prize_array[s_idx] < 1.0:
                     prize_array[s_idx] = 1.0
 
         # Root the tree at the highest-prize seed node
@@ -176,6 +177,12 @@ class PCSTSolver:
 
         best_seed = max(valid_seeds_in_local, key=lambda s: prizes.get(s, 0.0))
         root = node_to_idx[best_seed]
+
+        # Diagnostics
+        nonzero_prizes = np.count_nonzero(prize_array > base_prize)
+        print(f"  PCST input: {num_nodes} nodes, {len(edges)} edges, "
+              f"cost={self.cost:.2f}, {nonzero_prizes} high-prize nodes, "
+              f"base_prize={base_prize:.2f}, root={best_seed[:30]}...")
 
         # Run PCST with no pruning (GW pruning is too aggressive on sparse graphs)
         selected_nodes, selected_edges = pcst_fast.pcst_fast(
@@ -187,6 +194,8 @@ class PCSTSolver:
             'none',  # pruning
             0        # verbosity
         )
+
+        print(f"  PCST output: {len(selected_nodes)} nodes, {len(selected_edges)} edges")
 
         # Convert back to node names
         selected_node_names = [idx_to_node[i] for i in selected_nodes if i in idx_to_node]

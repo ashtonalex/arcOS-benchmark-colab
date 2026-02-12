@@ -83,31 +83,32 @@ class Retriever:
         seed_entities = [entity for entity, score in top_k_results]
         similarity_scores = {entity: score for entity, score in top_k_results}
 
-        # 3. Create prize dictionary (rank-based: rank 1 gets prize k, rank k gets prize 1)
+        # 3. Create prize dictionary using similarity scores (not just rank)
         prizes = {}
         for rank, (entity, score) in enumerate(top_k_results, start=1):
-            # Higher rank (lower number) = higher prize
-            # Scale by 10 to ensure prizes are significantly larger than edge costs (1.0)
-            prize = (self.config.top_k_entities - rank + 1) * 10.0
-            prizes[entity] = float(prize)
+            # Combine rank-based prize with similarity score
+            # Rank component: higher rank = higher prize (scaled by 10)
+            rank_prize = (self.config.top_k_entities - rank + 1) * 10.0
+            # Score component: similarity score scaled up
+            score_prize = float(score) * 50.0
+            prizes[entity] = rank_prize + score_prize
 
-        # 3b. Add small prizes for 1-hop neighbors of seed entities
-        # This helps PCST include answer entities that are adjacent to seeds
-        # Cap at 20 neighbors per seed to avoid expensive iteration on high-degree nodes
+        # 3b. Add prizes for 1-hop neighbors of seed entities
+        # Prize = 5.0 (high enough to justify edge cost of 0.1)
         max_neighbors_per_seed = 20
         for seed in seed_entities:
             if seed in self.unified_graph:
                 count = 0
                 for neighbor in self.unified_graph.successors(seed):
                     if neighbor not in prizes:
-                        prizes[neighbor] = 2.0
+                        prizes[neighbor] = 5.0
                         count += 1
                         if count >= max_neighbors_per_seed:
                             break
                 count = 0
                 for neighbor in self.unified_graph.predecessors(seed):
                     if neighbor not in prizes:
-                        prizes[neighbor] = 2.0
+                        prizes[neighbor] = 5.0
                         count += 1
                         if count >= max_neighbors_per_seed:
                             break
@@ -217,11 +218,11 @@ class Retriever:
         # 5. Initialize PCST solver (no state to checkpoint)
         print("\nInitializing PCST solver...")
         pcst_solver = PCSTSolver(
-            cost=1.0,
+            cost=config.pcst_cost,
             budget=config.pcst_budget,
             local_budget=config.pcst_local_budget
         )
-        print(f"✓ PCST solver ready (budget: {config.pcst_budget} nodes, local: {config.pcst_local_budget})")
+        print(f"✓ PCST solver ready (cost: {config.pcst_cost}, budget: {config.pcst_budget} nodes, local: {config.pcst_local_budget})")
 
         # 6. Create retriever instance
         retriever = cls(
