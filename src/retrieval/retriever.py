@@ -38,7 +38,9 @@ class Retriever:
         unified_graph: nx.DiGraph,
         embedder: TextEmbedder,
         entity_index: EntityIndex,
-        pcst_solver: PCSTSolver
+        pcst_solver: PCSTSolver,
+        entity_embeddings: Dict[str, np.ndarray],
+        relation_embeddings: Dict[str, np.ndarray]
     ):
         """
         Initialize retriever with all components.
@@ -49,12 +51,17 @@ class Retriever:
             embedder: Text embedding model
             entity_index: FAISS k-NN index
             pcst_solver: PCST subgraph extractor
+            entity_embeddings: Dict mapping entity names to embedding vectors
+            relation_embeddings: Dict mapping relation names to embedding vectors
         """
         self.config = config
         self.unified_graph = unified_graph
         self.embedder = embedder
+        self.text_embedder = embedder  # Alias for compatibility with GNN module
         self.entity_index = entity_index
         self.pcst_solver = pcst_solver
+        self.entity_embeddings = entity_embeddings
+        self.relation_embeddings = relation_embeddings
 
     def retrieve(self, question: str) -> RetrievedSubgraph:
         """
@@ -200,7 +207,9 @@ class Retriever:
             unified_graph=unified_graph,
             embedder=embedder,
             entity_index=entity_index,
-            pcst_solver=pcst_solver
+            pcst_solver=pcst_solver,
+            entity_embeddings=entity_embeddings,
+            relation_embeddings=relation_embeddings
         )
 
         print("\n" + "=" * 60)
