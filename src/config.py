@@ -44,6 +44,11 @@ class BenchmarkConfig:
     split_val: str = "validation"
     split_test: str = "test"
 
+    # Dataset size limits (for faster iteration during development)
+    max_train_examples: Optional[int] = 600  # ~1/5 of 2826, None = use all
+    max_val_examples: Optional[int] = 50     # ~1/5 of 246, None = use all
+    max_test_examples: Optional[int] = None  # Keep test set full for final eval
+
     # Expected dataset sizes (for validation)
     expected_train_size: int = 2830
     expected_val_size: int = 246
@@ -51,8 +56,9 @@ class BenchmarkConfig:
 
     # ========== Graph Construction ==========
     graph_directed: bool = True
-    unified_graph_min_nodes: int = 10000
-    unified_graph_min_edges: int = 30000
+    # Reduced min sizes for 1/5 dataset (was 10000/30000 for full)
+    unified_graph_min_nodes: int = 2000
+    unified_graph_min_edges: int = 6000
 
     # ========== Retrieval (Phase 2) ==========
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
