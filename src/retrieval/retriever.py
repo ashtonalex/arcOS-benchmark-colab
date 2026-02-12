@@ -91,6 +91,27 @@ class Retriever:
             prize = (self.config.top_k_entities - rank + 1) * 10.0
             prizes[entity] = float(prize)
 
+        # 3b. Add small prizes for 1-hop neighbors of seed entities
+        # This helps PCST include answer entities that are adjacent to seeds
+        # Cap at 20 neighbors per seed to avoid expensive iteration on high-degree nodes
+        max_neighbors_per_seed = 20
+        for seed in seed_entities:
+            if seed in self.unified_graph:
+                count = 0
+                for neighbor in self.unified_graph.successors(seed):
+                    if neighbor not in prizes:
+                        prizes[neighbor] = 2.0
+                        count += 1
+                        if count >= max_neighbors_per_seed:
+                            break
+                count = 0
+                for neighbor in self.unified_graph.predecessors(seed):
+                    if neighbor not in prizes:
+                        prizes[neighbor] = 2.0
+                        count += 1
+                        if count >= max_neighbors_per_seed:
+                            break
+
         # 4. Extract subgraph
         pcst_used = True
         try:
@@ -197,9 +218,10 @@ class Retriever:
         print("\nInitializing PCST solver...")
         pcst_solver = PCSTSolver(
             cost=1.0,
-            budget=config.pcst_budget
+            budget=config.pcst_budget,
+            local_budget=config.pcst_local_budget
         )
-        print(f"✓ PCST solver ready (budget: {config.pcst_budget} nodes)")
+        print(f"✓ PCST solver ready (budget: {config.pcst_budget} nodes, local: {config.pcst_local_budget})")
 
         # 6. Create retriever instance
         retriever = cls(

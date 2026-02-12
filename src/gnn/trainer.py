@@ -135,7 +135,7 @@ class GNNTrainer:
 
         # Learning rate scheduler
         self.scheduler = ReduceLROnPlateau(
-            self.optimizer, mode="min", patience=3, factor=0.5, verbose=True
+            self.optimizer, mode="min", patience=3, factor=0.5
         )
 
         # Training state
