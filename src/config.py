@@ -49,10 +49,10 @@ class BenchmarkConfig:
     max_val_examples: Optional[int] = 50     # ~1/5 of 246, None = use all
     max_test_examples: Optional[int] = None  # Keep test set full for final eval
 
-    # Expected dataset sizes (for validation)
-    expected_train_size: int = 2830
-    expected_val_size: int = 246
-    expected_test_size: int = 1630
+    # Expected dataset sizes (for validation) - after slicing
+    expected_train_size: int = 900
+    expected_val_size: int = 90
+    expected_test_size: int = 1628  # Full test set (actual size from dataset)
 
     # ========== Graph Construction ==========
     graph_directed: bool = True

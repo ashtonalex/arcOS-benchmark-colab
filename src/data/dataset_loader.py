@@ -159,6 +159,63 @@ class RoGWebQSPLoader:
 
         print("=" * 60)
 
+    def slice_dataset(
+        self,
+        dataset: DatasetDict,
+        train_size: int,
+        val_size: int,
+        test_size: Optional[int] = None,
+    ) -> DatasetDict:
+        """
+        Slice dataset splits to specified sizes.
+
+        Args:
+            dataset: DatasetDict to slice
+            train_size: Number of training examples to keep
+            val_size: Number of validation examples to keep
+            test_size: Number of test examples to keep (None = keep all)
+
+        Returns:
+            DatasetDict with sliced splits
+        """
+        print("\n" + "=" * 60)
+        print("Dataset Slicing")
+        print("=" * 60)
+
+        original_train = len(dataset["train"])
+        original_val = len(dataset["validation"])
+        original_test = len(dataset["test"])
+
+        print(f"Original sizes:")
+        print(f"  Train: {original_train}")
+        print(f"  Validation: {original_val}")
+        print(f"  Test: {original_test}")
+
+        # Validate requested sizes
+        if train_size > original_train:
+            raise ValueError(f"Requested train_size ({train_size}) exceeds available examples ({original_train})")
+        if val_size > original_val:
+            raise ValueError(f"Requested val_size ({val_size}) exceeds available examples ({original_val})")
+        if test_size is not None and test_size > original_test:
+            raise ValueError(f"Requested test_size ({test_size}) exceeds available examples ({original_test})")
+
+        # Slice each split
+        sliced_dataset = DatasetDict({
+            "train": dataset["train"].select(range(train_size)),
+            "validation": dataset["validation"].select(range(val_size)),
+            "test": dataset["test"].select(range(test_size)) if test_size is not None else dataset["test"],
+        })
+
+        print(f"\nSliced sizes:")
+        print(f"  Train: {len(sliced_dataset['train'])}")
+        print(f"  Validation: {len(sliced_dataset['validation'])}")
+        print(f"  Test: {len(sliced_dataset['test'])}")
+
+        print("\n✓ Dataset sliced successfully")
+        print("=" * 60)
+
+        return sliced_dataset
+
     def validate_split_counts(
         self,
         dataset: DatasetDict,
