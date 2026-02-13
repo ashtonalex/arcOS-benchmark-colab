@@ -124,21 +124,21 @@ class Retriever:
                 score_prize = max(float(score), 0.0) * 20.0
                 prizes[entity] = rank_prize + score_prize
 
-        # 1-hop neighbor prizes (enough to justify edge cost of 0.1)
+        # 1-hop neighbor prizes (net-positive vs edge cost, but below seed prizes)
         max_neighbors_per_seed = 20
         for seed in seed_entities:
             if seed in self.unified_graph:
                 count = 0
                 for neighbor in self.unified_graph.successors(seed):
                     if neighbor not in prizes:
-                        prizes[neighbor] = 5.0
+                        prizes[neighbor] = 3.0
                         count += 1
                         if count >= max_neighbors_per_seed:
                             break
                 count = 0
                 for neighbor in self.unified_graph.predecessors(seed):
                     if neighbor not in prizes:
-                        prizes[neighbor] = 5.0
+                        prizes[neighbor] = 3.0
                         count += 1
                         if count >= max_neighbors_per_seed:
                             break
@@ -250,9 +250,13 @@ class Retriever:
         pcst_solver = PCSTSolver(
             cost=config.pcst_cost,
             budget=config.pcst_budget,
-            local_budget=config.pcst_local_budget
+            local_budget=config.pcst_local_budget,
+            pruning=config.pcst_pruning,
+            base_prize_ratio=config.pcst_base_prize_ratio
         )
-        print(f"✓ PCST solver ready (cost: {config.pcst_cost}, budget: {config.pcst_budget} nodes, local: {config.pcst_local_budget})")
+        print(f"✓ PCST solver ready (cost: {config.pcst_cost}, budget: {config.pcst_budget}, "
+              f"local: {config.pcst_local_budget}, pruning: {config.pcst_pruning}, "
+              f"base_prize_ratio: {config.pcst_base_prize_ratio})")
 
         # 6. Create retriever instance
         retriever = cls(

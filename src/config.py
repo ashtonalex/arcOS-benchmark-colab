@@ -65,8 +65,10 @@ class BenchmarkConfig:
     embedding_dim: int = 384
     top_k_entities: int = 15
     pcst_budget: int = 50  # Max nodes in extracted subgraph
-    pcst_local_budget: int = 300  # BFS neighborhood size before PCST
-    pcst_cost: float = 0.1  # Edge cost for PCST (lower = more aggressive expansion)
+    pcst_local_budget: int = 500  # BFS neighborhood size before PCST
+    pcst_cost: float = 1.0  # Edge cost for PCST
+    pcst_pruning: str = "strong"  # PCST pruning strategy: 'none', 'gw', or 'strong'
+    pcst_base_prize_ratio: float = 1.5  # base_prize = cost * ratio (intermediates survive pruning)
 
     # ========== GNN (Phase 3) ==========
     gnn_hidden_dim: int = 256
@@ -107,6 +109,10 @@ class BenchmarkConfig:
             raise ValueError(f"pcst_budget must be positive, got {self.pcst_budget}")
         if not 0 <= self.gnn_dropout <= 1:
             raise ValueError(f"gnn_dropout must be in [0, 1], got {self.gnn_dropout}")
+        if self.pcst_pruning not in ["none", "gw", "strong"]:
+            raise ValueError(f"pcst_pruning must be 'none', 'gw', or 'strong', got {self.pcst_pruning}")
+        if self.pcst_base_prize_ratio <= 0:
+            raise ValueError(f"pcst_base_prize_ratio must be positive, got {self.pcst_base_prize_ratio}")
         if self.gnn_pooling not in ["attention", "mean"]:
             raise ValueError(f"gnn_pooling must be 'attention' or 'mean', got {self.gnn_pooling}")
         if self.verbalization_format not in ["natural", "structured"]:
@@ -128,6 +134,8 @@ class BenchmarkConfig:
         print(f"PCST budget: {self.pcst_budget}")
         print(f"PCST local budget: {self.pcst_local_budget}")
         print(f"PCST edge cost: {self.pcst_cost}")
+        print(f"PCST pruning: {self.pcst_pruning}")
+        print(f"PCST base prize ratio: {self.pcst_base_prize_ratio}")
         print("\n--- GNN ---")
         print(f"Hidden dim: {self.gnn_hidden_dim}")
         print(f"Num layers: {self.gnn_num_layers}")

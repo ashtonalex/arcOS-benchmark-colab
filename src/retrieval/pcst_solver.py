@@ -16,18 +16,23 @@ from collections import deque
 class PCSTSolver:
     """Extract connected subgraphs using PCST algorithm."""
 
-    def __init__(self, cost: float = 0.1, budget: int = 50, local_budget: int = 300):
+    def __init__(self, cost: float = 1.0, budget: int = 50, local_budget: int = 500,
+                 pruning: str = "strong", base_prize_ratio: float = 1.5):
         """
         Initialize PCST solver.
 
         Args:
-            cost: Edge cost parameter for PCST (default 0.1, low to encourage expansion)
+            cost: Edge cost parameter for PCST
             budget: Maximum nodes in extracted subgraph
             local_budget: Max nodes for BFS localization before PCST
+            pruning: PCST pruning strategy ('none', 'gw', or 'strong')
+            base_prize_ratio: base_prize = cost * ratio (intermediates survive pruning)
         """
         self.cost = cost
         self.budget = budget
         self.local_budget = local_budget
+        self.pruning = pruning
+        self.base_prize_ratio = base_prize_ratio
         # Cache for undirected graph conversion of the full graph
         self._cached_graph_id = None
         self._cached_undirected: nx.Graph = None
@@ -73,26 +78,34 @@ class PCSTSolver:
 
         # Step 1: Localize — extract small neighborhood around seeds
         local_graph = self._localize(G, valid_seeds)
+        print(f"  Localized: {len(local_graph)} nodes, {local_graph.number_of_edges()} edges")
 
         # Step 2: Try PCST on the local graph
         try:
             subgraph = self._pcst_extract(local_graph, valid_seeds, prizes)
         except Exception as e:
-            print(f"⚠ PCST failed ({e}), falling back to BFS")
+            print(f"  PCST failed ({e}), falling back to BFS")
             subgraph = self._bfs_fallback(G, valid_seeds, self.budget)
 
         # Step 3: Validate — PCST should return at least a few nodes
         if len(subgraph) < min(len(valid_seeds), 3):
-            print(f"⚠ PCST result too small ({len(subgraph)} nodes), falling back to BFS")
+            print(f"  PCST result too small ({len(subgraph)} nodes), falling back to BFS")
             subgraph = self._bfs_fallback(G, valid_seeds, self.budget)
 
-        # Step 4: Enforce budget
+        # Step 4: Enforce budget via iterative leaf pruning
         if len(subgraph) > self.budget:
+            pre_trim = len(subgraph)
             subgraph = self._trim_to_budget(subgraph, prizes)
+            print(f"  Trimmed: {pre_trim} -> {len(subgraph)} nodes")
 
         # Step 5: Ensure weak connectivity
         if len(subgraph) > 1 and not nx.is_weakly_connected(subgraph):
+            pre_comp = len(subgraph)
             subgraph = self._largest_component(subgraph)
+            print(f"  Largest component: {pre_comp} -> {len(subgraph)} nodes")
+
+        print(f"  Final: {len(subgraph)} nodes, {subgraph.number_of_edges()} edges, "
+              f"connected={nx.is_weakly_connected(subgraph) if len(subgraph) > 0 else 'N/A'}")
 
         return subgraph
 
@@ -155,20 +168,21 @@ class PCSTSolver:
         edges_array = np.array(edges, dtype=np.int32)
         costs_array = np.full(len(edges), self.cost, dtype=np.float64)
 
-        # Build prize array — base prize for ALL nodes so intermediates aren't pure cost
+        # Build prize array — base prize for ALL nodes so intermediates survive pruning
         num_nodes = len(nodes)
-        base_prize = self.cost * 0.5  # Half edge cost: not free, but worth traversing
+        base_prize = self.cost * self.base_prize_ratio  # e.g. 1.0 * 1.5 = 1.5
+        seed_floor = max(5.0, self.cost * 5.0)  # Seeds clearly outweigh edge cost
         prize_array = np.full(num_nodes, base_prize, dtype=np.float64)
         for node, prize in prizes.items():
             if node in node_to_idx:
                 prize_array[node_to_idx[node]] = max(prize, base_prize)
 
-        # Ensure seed nodes have non-zero prizes
+        # Ensure seed nodes have meaningful prizes
         for seed in seed_nodes:
             if seed in node_to_idx:
                 s_idx = node_to_idx[seed]
-                if prize_array[s_idx] < 1.0:
-                    prize_array[s_idx] = 1.0
+                if prize_array[s_idx] < seed_floor:
+                    prize_array[s_idx] = seed_floor
 
         # Root the tree at the highest-prize seed node
         valid_seeds_in_local = [s for s in seed_nodes if s in node_to_idx]
@@ -181,18 +195,19 @@ class PCSTSolver:
         # Diagnostics
         nonzero_prizes = np.count_nonzero(prize_array > base_prize)
         print(f"  PCST input: {num_nodes} nodes, {len(edges)} edges, "
-              f"cost={self.cost:.2f}, {nonzero_prizes} high-prize nodes, "
-              f"base_prize={base_prize:.2f}, root={best_seed[:30]}...")
+              f"cost={self.cost:.2f}, base_prize={base_prize:.2f}, "
+              f"seed_floor={seed_floor:.1f}, pruning='{self.pruning}', "
+              f"{nonzero_prizes} high-prize nodes, root={best_seed[:30]}...")
 
-        # Run PCST with no pruning (GW pruning is too aggressive on sparse graphs)
+        # Run PCST with active pruning
         selected_nodes, selected_edges = pcst_fast.pcst_fast(
             edges_array,
             prize_array,
             costs_array,
             root,
-            1,       # num_clusters (ignored with root)
-            'none',  # pruning
-            0        # verbosity
+            1,              # num_clusters (ignored with root)
+            self.pruning,   # pruning strategy
+            0               # verbosity
         )
 
         print(f"  PCST output: {len(selected_nodes)} nodes, {len(selected_edges)} edges")
@@ -251,20 +266,35 @@ class PCSTSolver:
         return subgraph
 
     def _trim_to_budget(self, subgraph: nx.DiGraph, prizes: Dict[str, float]) -> nx.DiGraph:
-        """Trim subgraph to budget by keeping highest-prize nodes."""
+        """Trim subgraph to budget by iteratively removing lowest-prize leaf nodes.
+
+        Unlike naive top-K selection which scatters nodes and destroys connectivity,
+        iterative leaf pruning preserves the tree structure by only removing nodes
+        from the periphery.
+        """
         if len(subgraph) <= self.budget:
             return subgraph
 
-        nodes_with_prizes = [
-            (node, prizes.get(node, 0.0))
-            for node in subgraph.nodes()
-        ]
-        nodes_with_prizes.sort(key=lambda x: x[1], reverse=True)
+        G = subgraph.copy()
+        G_und = G.to_undirected()
 
-        keep_nodes = [node for node, _ in nodes_with_prizes[:self.budget]]
-        trimmed = subgraph.subgraph(keep_nodes).copy()
+        while len(G) > self.budget:
+            # Find leaf nodes (degree 1 in undirected view)
+            leaves = [n for n in G_und.nodes() if G_und.degree(n) <= 1]
+            if not leaves:
+                # No leaves — graph is fully connected with no periphery; fall back
+                # to removing lowest-prize node
+                worst = min(G.nodes(), key=lambda n: prizes.get(n, 0.0))
+                G.remove_node(worst)
+                G_und.remove_node(worst)
+                continue
 
-        return trimmed
+            # Remove the leaf with the lowest prize
+            worst_leaf = min(leaves, key=lambda n: prizes.get(n, 0.0))
+            G.remove_node(worst_leaf)
+            G_und.remove_node(worst_leaf)
+
+        return G
 
     def _largest_component(self, subgraph: nx.DiGraph) -> nx.DiGraph:
         """Return the largest weakly connected component."""
