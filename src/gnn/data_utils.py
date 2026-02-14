@@ -116,7 +116,7 @@ class SubgraphConverter:
 
         # Encode question
         query_embedding = self.text_embedder.embed_texts([question])[0]
-        query_embedding = torch.tensor(query_embedding, dtype=torch.float32)
+        query_embedding = torch.tensor(query_embedding, dtype=torch.float32).unsqueeze(0)  # [1, dim] for proper PyG batching
 
         # Build labels if answer entities provided
         if answer_entities is not None:

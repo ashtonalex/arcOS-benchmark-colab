@@ -231,7 +231,7 @@ class GNNModel:
         with torch.no_grad():
             # Encoder
             node_embeddings, attention_weights = self.trainer.encoder(
-                data.x, data.edge_index, data.edge_attr, data.query_embedding
+                data.x, data.edge_index, data.edge_attr, data.query_embedding[0]
             )
 
             # Pooling
