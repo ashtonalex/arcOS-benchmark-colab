@@ -16,7 +16,7 @@ from collections import deque
 class PCSTSolver:
     """Extract connected subgraphs using PCST algorithm."""
 
-    def __init__(self, cost: float = 2.0, budget: int = 50, local_budget: int = 500,
+    def __init__(self, cost: float = 0.05, budget: int = 70, local_budget: int = 500,
                  pruning: str = "gw", base_prize_ratio: float = 1.5):
         """
         Initialize PCST solver.
