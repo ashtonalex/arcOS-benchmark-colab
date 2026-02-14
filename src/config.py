@@ -65,10 +65,10 @@ class BenchmarkConfig:
     embedding_dim: int = 384
     top_k_entities: int = 15
     pcst_budget: int = 70  # Max nodes in extracted subgraph
-    pcst_local_budget: int = 600  # BFS neighborhood size before PCST
-    pcst_cost: float = 3.0  # Edge cost for PCST
-    pcst_pruning: str = "strong"  # PCST pruning strategy: 'none', 'gw', or 'strong'
-    pcst_base_prize_ratio: float = 1.5  # base_prize = cost * ratio (intermediates survive pruning)
+    pcst_local_budget: int = 300  # BFS neighborhood size before PCST
+    pcst_cost: float = 1.0  # Edge cost for PCST
+    pcst_pruning: str = "gw"  # PCST pruning strategy: 'none', 'gw', or 'strong'
+    pcst_base_prize_ratio: float = 5.0  # base_prize = cost * ratio (intermediates survive pruning)
 
     # ========== GNN (Phase 3) ==========
     gnn_hidden_dim: int = 256

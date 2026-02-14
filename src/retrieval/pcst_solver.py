@@ -89,7 +89,16 @@ class PCSTSolver:
 
         # Step 3: Validate — PCST should return at least a few nodes
         if len(subgraph) < min(len(valid_seeds), 3):
-            print(f"  PCST result too small ({len(subgraph)} nodes), falling back to BFS")
+            print(f"  PCST result too small ({len(subgraph)} nodes), retrying with pruning='none'")
+            try:
+                subgraph = self._pcst_extract(local_graph, valid_seeds, prizes, pruning_override="none")
+            except Exception as e:
+                print(f"  PCST retry failed ({e})")
+                subgraph = nx.DiGraph()
+
+        # Step 3b: If still too small after retry, fall back to BFS
+        if len(subgraph) < min(len(valid_seeds), 3):
+            print(f"  PCST still too small ({len(subgraph)} nodes), falling back to BFS")
             subgraph = self._bfs_fallback(G, valid_seeds, self.budget)
 
         # Step 4: Enforce budget via iterative leaf pruning
@@ -141,7 +150,8 @@ class PCSTSolver:
         self,
         G: nx.DiGraph,
         seed_nodes: List[str],
-        prizes: Dict[str, float]
+        prizes: Dict[str, float],
+        pruning_override: str = None
     ) -> nx.DiGraph:
         """
         Extract subgraph using pcst_fast library.
@@ -175,7 +185,7 @@ class PCSTSolver:
         prize_array = np.full(num_nodes, base_prize, dtype=np.float64)
         for node, prize in prizes.items():
             if node in node_to_idx:
-                prize_array[node_to_idx[node]] = max(prize, base_prize)
+                prize_array[node_to_idx[node]] = base_prize + max(prize, 0.0)
 
         # Ensure seed nodes have meaningful prizes
         for seed in seed_nodes:
@@ -193,10 +203,11 @@ class PCSTSolver:
         root = node_to_idx[best_seed]
 
         # Diagnostics
+        effective_pruning = pruning_override if pruning_override else self.pruning
         nonzero_prizes = np.count_nonzero(prize_array > base_prize)
         print(f"  PCST input: {num_nodes} nodes, {len(edges)} edges, "
               f"cost={self.cost:.2f}, base_prize={base_prize:.2f}, "
-              f"seed_floor={seed_floor:.1f}, pruning='{self.pruning}', "
+              f"seed_floor={seed_floor:.1f}, pruning='{effective_pruning}', "
               f"{nonzero_prizes} high-prize nodes, root={best_seed[:30]}...")
 
         # Run PCST with active pruning
@@ -205,9 +216,9 @@ class PCSTSolver:
             prize_array,
             costs_array,
             root,
-            1,              # num_clusters (ignored with root)
-            self.pruning,   # pruning strategy
-            0               # verbosity
+            1,                   # num_clusters (ignored with root)
+            effective_pruning,   # pruning strategy
+            0                    # verbosity
         )
 
         print(f"  PCST output: {len(selected_nodes)} nodes, {len(selected_edges)} edges")
