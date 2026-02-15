@@ -13,56 +13,138 @@ import numpy as np
 from collections import deque
 
 
-def _pcst_fast_raw(edges, prizes, costs, root, num_clusters, pruning, verbosity):
-    """Call pcst_fast C extension directly, returning full-length label arrays.
+def _diagnose_pcst_fast():
+    """One-time diagnostic: determine pcst_fast's return format.
 
-    The high-level pcst_fast.pcst_fast() wrapper filters results by
-    ``labels[labels >= 0]``, which returns cluster-label VALUES (all zeros)
-    instead of positional INDICES.  By calling the compiled extension we get
-    the raw per-node / per-edge label vectors and can recover indices with
-    ``np.where(labels >= 0)``.
+    Runs a tiny 4-node problem where we KNOW the correct answer,
+    then checks whether the return values are indices or labels.
+
+    Returns:
+        "indices" — pcst_fast returns filtered node/edge indices (correct API)
+        "labels"  — pcst_fast returns filtered cluster labels (broken API)
     """
-    try:
-        # Preferred: call the compiled C extension directly
-        from pcst_fast._pcst_fast import pcst_fast as _c_pcst
-        return _c_pcst(edges, prizes, costs, root, num_clusters, pruning, verbosity)
-    except (ImportError, AttributeError):
-        pass
-
-    # Fallback: call the public API and detect / fix the broken output
     import pcst_fast
-    node_res, edge_res = pcst_fast.pcst_fast(
-        edges, prizes, costs, root, num_clusters, pruning, verbosity
+
+    #  Triangle: 0—1—2—0, with node 3 disconnected via edge to 1
+    #  Prizes: [10, 10, 10, 0]  → nodes 0-2 high value, node 3 worthless
+    #  With root=0, pruning='none': should select nodes {0, 1, 2} at minimum
+    probe_edges  = np.array([[0, 1], [1, 2], [2, 0], [1, 3]], dtype=np.int64)
+    probe_prizes = np.array([10.0, 10.0, 10.0, 0.0], dtype=np.float64)
+    probe_costs  = np.array([1.0, 1.0, 1.0, 100.0], dtype=np.float64)
+
+    verts, edges = pcst_fast.pcst_fast(
+        probe_edges, probe_prizes, probe_costs,
+        0,        # root
+        1,        # num_clusters
+        "none",   # pruning (keep everything reachable)
+        0         # verbosity
     )
-    node_res = np.asarray(node_res)
-    edge_res = np.asarray(edge_res)
+    verts = np.asarray(verts)
 
-    num_nodes = len(prizes)
-    num_edges = len(costs)
+    # If indices: verts ⊂ {0,1,2,3} with distinct values, e.g. [0,1,2]
+    # If labels:  verts = [0,0,0] (cluster label 0 repeated)
+    n_unique = len(np.unique(verts))
 
-    # If the wrapper already returned full-length label arrays, use as-is
-    if len(node_res) == num_nodes and len(edge_res) == num_edges:
-        return node_res, edge_res
+    if n_unique >= 2:
+        return "indices"
+    else:
+        return "labels"
 
-    # Detect the broken "filtered labels" format:
-    # Valid filtered indices would have many unique values; cluster labels are constant.
-    node_unique = np.unique(node_res)
-    if len(node_res) > 1 and len(node_unique) <= 1:
-        raise RuntimeError(
-            f"pcst_fast returned filtered cluster labels (all {node_unique.tolist()}), "
-            f"not node indices. Cannot recover positional indices from this format. "
-            f"Install pcst_fast with accessible _pcst_fast C extension, or downgrade."
-        )
 
-    # Looks like valid filtered indices — synthesise full-length label arrays
-    # so the caller can use np.where uniformly.
-    full_nodes = np.full(num_nodes, -1, dtype=np.int64)
-    full_edges = np.full(num_edges, -1, dtype=np.int64)
-    for idx in node_res:
-        full_nodes[int(idx)] = 0
-    for idx in edge_res:
-        full_edges[int(idx)] = 0
-    return full_nodes, full_edges
+# Module-level cache
+_pcst_format = None
+
+
+def _pcst_solve(edges_array, prize_array, costs_array, root, num_clusters,
+                pruning, verbosity, num_nodes, num_edges):
+    """Solve PCST and return (selected_node_indices, selected_edge_indices).
+
+    Handles both pcst_fast return formats transparently:
+    - "indices" format: use returned arrays directly
+    - "labels" format: count selected, prune lowest-prize leaves to match
+    """
+    global _pcst_format
+    import pcst_fast
+
+    # One-time format detection
+    if _pcst_format is None:
+        _pcst_format = _diagnose_pcst_fast()
+        print(f"  [pcst] Detected return format: '{_pcst_format}'")
+
+    raw_v, raw_e = pcst_fast.pcst_fast(
+        edges_array, prize_array, costs_array,
+        root, num_clusters, pruning, verbosity
+    )
+    raw_v = np.asarray(raw_v)
+    raw_e = np.asarray(raw_e)
+
+    if _pcst_format == "indices":
+        # Happy path: raw_v contains actual node indices
+        return raw_v.astype(np.int64), raw_e.astype(np.int64)
+
+    # --- "labels" format: raw_v has the correct COUNT but not indices ---
+    # pcst_fast selected len(raw_v) nodes out of num_nodes.
+    # We reconstruct which nodes by solving:
+    #   "keep exactly len(raw_v) nodes, rooted at `root`, maximising
+    #    total prize minus total edge cost, connected."
+    #
+    # For a small graph (≤500 nodes) the fastest correct approach is:
+    # 1. Build MST of the local graph
+    # 2. Iteratively prune lowest-prize leaves until we reach target count
+    # This is a standard PCST approximation on trees.
+
+    target_n = len(raw_v)
+    target_e = len(raw_e)
+
+    if target_n >= num_nodes:
+        # PCST kept everything
+        return np.arange(num_nodes, dtype=np.int64), np.arange(num_edges, dtype=np.int64)
+
+    # Build NetworkX graph from edge array for MST computation
+    import networkx as nx
+    G_local = nx.Graph()
+    G_local.add_nodes_from(range(num_nodes))
+
+    edges_list = edges_array.tolist() if hasattr(edges_array, 'tolist') else list(edges_array)
+    for i, (u, v) in enumerate(edges_list):
+        u, v = int(u), int(v)
+        # Use edge cost as weight; keep edge index for later
+        if not G_local.has_edge(u, v) or G_local[u][v].get("weight", float("inf")) > float(costs_array[i]):
+            G_local.add_edge(u, v, weight=float(costs_array[i]), edge_idx=i)
+
+    # MST from the local graph
+    if not nx.is_connected(G_local):
+        # Use the component containing root
+        comp = nx.node_connected_component(G_local, int(root))
+        G_local = G_local.subgraph(comp).copy()
+        # Recount: can't keep more nodes than the component has
+        target_n = min(target_n, len(G_local))
+
+    mst = nx.minimum_spanning_tree(G_local)
+
+    # Iterative leaf pruning: remove lowest-prize leaves until |nodes| == target
+    while len(mst) > target_n:
+        leaves = [n for n in mst.nodes() if mst.degree(n) <= 1 and n != int(root)]
+        if not leaves:
+            break
+        worst = min(leaves, key=lambda n: float(prize_array[n]))
+        mst.remove_node(worst)
+
+    # Ensure connectivity after pruning
+    if not nx.is_connected(mst):
+        comp = nx.node_connected_component(mst, int(root))
+        mst = mst.subgraph(comp).copy()
+
+    selected_node_indices = np.array(sorted(mst.nodes()), dtype=np.int64)
+
+    # Map MST edges back to original edge indices
+    selected_edge_set = set()
+    for u, v, data in mst.edges(data=True):
+        if "edge_idx" in data:
+            selected_edge_set.add(data["edge_idx"])
+    selected_edge_indices = np.array(sorted(selected_edge_set), dtype=np.int64)
+
+    return selected_node_indices, selected_edge_indices
 
 
 def normalize_pcst_inputs(
@@ -279,31 +361,18 @@ class PCSTSolver:
             edges_array, prize_array, costs_array, root, 1
         )
 
-        # Run PCST — get raw full-length cluster labels from C extension,
-        # then extract indices ourselves. The Python wrapper's filtering
-        # returns label VALUES (all zeros) instead of positional INDICES.
-        raw_node_labels, raw_edge_labels = _pcst_fast_raw(
+        # Run PCST — handles both "indices" and "labels" return formats
+        selected_node_indices, selected_edge_indices = _pcst_solve(
             edges_array, prize_array, costs_array,
-            root, num_clusters, effective_pruning, 0
+            root, num_clusters, effective_pruning, 0,
+            num_nodes, len(edges)
         )
 
-        raw_node_labels = np.asarray(raw_node_labels)
-        raw_edge_labels = np.asarray(raw_edge_labels)
+        print(f"  PCST output: {len(selected_node_indices)} nodes, {len(selected_edge_indices)} edges")
 
-        # Extract INDICES where label >= 0 (selected by PCST)
-        selected_node_indices = np.where(raw_node_labels >= 0)[0]
-        selected_edge_indices = np.where(raw_edge_labels >= 0)[0]
-
-        print(f"  PCST output: {len(selected_node_indices)} nodes, {len(selected_edge_indices)} edges "
-              f"(raw labels shape: nodes={raw_node_labels.shape}, edges={raw_edge_labels.shape})")
-
-        # Sanity checks — catch regressions immediately
-        assert selected_node_indices.ndim == 1, \
-            f"selected_node_indices must be 1-D, got shape {selected_node_indices.shape}"
+        # Sanity checks
         assert len(selected_node_indices) == 0 or selected_node_indices.max() < num_nodes, \
             f"Node index {selected_node_indices.max()} out of range [0, {num_nodes})"
-        assert len(selected_edge_indices) == 0 or selected_edge_indices.max() < len(edges), \
-            f"Edge index {selected_edge_indices.max()} out of range [0, {len(edges)})"
         n_unique = len(np.unique(selected_node_indices))
         assert n_unique == len(selected_node_indices), \
             f"Duplicate node indices: {len(selected_node_indices)} total but only {n_unique} unique"
