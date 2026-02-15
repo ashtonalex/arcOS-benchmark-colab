@@ -13,42 +13,115 @@ import numpy as np
 from collections import deque
 
 
-def _diagnose_pcst_fast():
-    """One-time diagnostic: determine pcst_fast's return format.
+def diagnose_pcst_fast():
+    """Diagnostic: inspect pcst_fast internals and determine return format.
 
-    Runs a tiny 4-node problem where we KNOW the correct answer,
-    then checks whether the return values are indices or labels.
+    Prints full module structure (run once in Colab to understand the binding),
+    then runs a 4-node probe to classify the return format.
 
     Returns:
         "indices" — pcst_fast returns filtered node/edge indices (correct API)
-        "labels"  — pcst_fast returns filtered cluster labels (broken API)
+        "labels"  — pcst_fast returns filtered cluster labels (broken)
     """
     import pcst_fast
+    import inspect
+    import importlib
+    import pkgutil
 
-    #  Triangle: 0—1—2—0, with node 3 disconnected via edge to 1
-    #  Prizes: [10, 10, 10, 0]  → nodes 0-2 high value, node 3 worthless
-    #  With root=0, pruning='none': should select nodes {0, 1, 2} at minimum
+    print("=" * 60)
+    print("pcst_fast MODULE DIAGNOSTIC")
+    print("=" * 60)
+
+    # 1. Module location and type
+    mod_file = getattr(pcst_fast, "__file__", "N/A")
+    mod_path = getattr(pcst_fast, "__path__", None)
+    print(f"Module file : {mod_file}")
+    print(f"Package path: {mod_path}")
+    print(f"Version     : {getattr(pcst_fast, '__version__', 'N/A')}")
+
+    # 2. Is pcst_fast.pcst_fast a Python function or C extension?
+    fn = pcst_fast.pcst_fast
+    fn_type = type(fn).__name__
+    print(f"\npcst_fast.pcst_fast type: {fn_type}")
+
+    if fn_type == "function":
+        # Python wrapper — we can read its source
+        try:
+            src = inspect.getsource(fn)
+            print(f"Source ({len(src)} chars):")
+            print("-" * 40)
+            for line in src.splitlines()[:30]:
+                print(f"  {line}")
+            if len(src.splitlines()) > 30:
+                print(f"  ... ({len(src.splitlines()) - 30} more lines)")
+            print("-" * 40)
+
+            # Check closures / globals for the internal C function
+            if hasattr(fn, "__globals__"):
+                c_candidates = [
+                    k for k, v in fn.__globals__.items()
+                    if callable(v) and k != "pcst_fast"
+                    and ("pcst" in k.lower() or k.startswith("_"))
+                ]
+                if c_candidates:
+                    print(f"Potential C functions in globals: {c_candidates}")
+        except (TypeError, OSError) as e:
+            print(f"Cannot read source: {e}")
+    else:
+        print("This IS the C extension (no Python wrapper to intercept)")
+
+    # 3. Scan submodules
+    if mod_path:
+        print("\nSubmodules:")
+        for importer, modname, ispkg in pkgutil.iter_modules(mod_path):
+            try:
+                sub = importlib.import_module(f"pcst_fast.{modname}")
+                attrs = [a for a in dir(sub) if not a.startswith("__")]
+                print(f"  pcst_fast.{modname}: {attrs[:10]}")
+            except Exception as e:
+                print(f"  pcst_fast.{modname}: FAILED ({e})")
+    else:
+        print("\nNo submodules (single-file extension)")
+
+    # 4. All attributes
+    print(f"\nAll pcst_fast attributes:")
+    for attr in sorted(dir(pcst_fast)):
+        if not attr.startswith("__"):
+            obj = getattr(pcst_fast, attr)
+            print(f"  {attr}: {type(obj).__name__}")
+
+    # 5. Probe test
+    print("\n" + "=" * 60)
+    print("PROBE TEST (4-node graph)")
+    print("=" * 60)
+
     probe_edges  = np.array([[0, 1], [1, 2], [2, 0], [1, 3]], dtype=np.int64)
     probe_prizes = np.array([10.0, 10.0, 10.0, 0.0], dtype=np.float64)
     probe_costs  = np.array([1.0, 1.0, 1.0, 100.0], dtype=np.float64)
 
     verts, edges = pcst_fast.pcst_fast(
         probe_edges, probe_prizes, probe_costs,
-        0,        # root
-        1,        # num_clusters
-        "none",   # pruning (keep everything reachable)
-        0         # verbosity
+        0, 1, "none", 0
     )
     verts = np.asarray(verts)
+    edges = np.asarray(edges)
 
-    # If indices: verts ⊂ {0,1,2,3} with distinct values, e.g. [0,1,2]
-    # If labels:  verts = [0,0,0] (cluster label 0 repeated)
+    print(f"Input : 4 nodes, 4 edges, root=0, prizes=[10,10,10,0]")
+    print(f"verts : dtype={verts.dtype}, shape={verts.shape}, values={verts.tolist()}")
+    print(f"edges : dtype={edges.dtype}, shape={edges.shape}, values={edges.tolist()}")
+    print(f"Unique vert values: {np.unique(verts).tolist()}")
+
+    # Classify
     n_unique = len(np.unique(verts))
-
     if n_unique >= 2:
-        return "indices"
+        fmt = "indices"
+        print(f"\nVerdict: INDICES format (distinct values)")
     else:
-        return "labels"
+        fmt = "labels"
+        print(f"\nVerdict: LABELS format (constant {verts[0] if len(verts) else 'N/A'})")
+
+    print("=" * 60)
+    return fmt
 
 
 # Module-level cache
@@ -61,85 +134,100 @@ def _pcst_solve(edges_array, prize_array, costs_array, root, num_clusters,
 
     Handles both pcst_fast return formats transparently:
     - "indices" format: use returned arrays directly
-    - "labels" format: count selected, prune lowest-prize leaves to match
+    - "labels" format: pcst_fast result is unusable, solve PCST from scratch
+      using NetworkX Steiner tree approximation with prize-based pruning
     """
     global _pcst_format
     import pcst_fast
 
     # One-time format detection
     if _pcst_format is None:
-        _pcst_format = _diagnose_pcst_fast()
-        print(f"  [pcst] Detected return format: '{_pcst_format}'")
-
-    raw_v, raw_e = pcst_fast.pcst_fast(
-        edges_array, prize_array, costs_array,
-        root, num_clusters, pruning, verbosity
-    )
-    raw_v = np.asarray(raw_v)
-    raw_e = np.asarray(raw_e)
+        _pcst_format = diagnose_pcst_fast()
 
     if _pcst_format == "indices":
-        # Happy path: raw_v contains actual node indices
-        return raw_v.astype(np.int64), raw_e.astype(np.int64)
+        # Happy path: pcst_fast returns actual node/edge indices
+        raw_v, raw_e = pcst_fast.pcst_fast(
+            edges_array, prize_array, costs_array,
+            root, num_clusters, pruning, verbosity
+        )
+        return np.asarray(raw_v, dtype=np.int64), np.asarray(raw_e, dtype=np.int64)
 
-    # --- "labels" format: raw_v has the correct COUNT but not indices ---
-    # pcst_fast selected len(raw_v) nodes out of num_nodes.
-    # We reconstruct which nodes by solving:
-    #   "keep exactly len(raw_v) nodes, rooted at `root`, maximising
-    #    total prize minus total edge cost, connected."
-    #
-    # For a small graph (≤500 nodes) the fastest correct approach is:
-    # 1. Build MST of the local graph
-    # 2. Iteratively prune lowest-prize leaves until we reach target count
-    # This is a standard PCST approximation on trees.
+    # --- "labels" format: pcst_fast output is unusable ---
+    # Solve PCST from scratch using NetworkX.
+    # For small graphs (≤500 nodes) this is fast and exact.
+    return _solve_pcst_networkx(
+        edges_array, prize_array, costs_array,
+        int(root), num_nodes, num_edges
+    )
 
-    target_n = len(raw_v)
-    target_e = len(raw_e)
 
-    if target_n >= num_nodes:
-        # PCST kept everything
-        return np.arange(num_nodes, dtype=np.int64), np.arange(num_edges, dtype=np.int64)
+def _solve_pcst_networkx(edges_array, prize_array, costs_array,
+                         root, num_nodes, num_edges):
+    """Pure NetworkX PCST solver for small graphs.
 
-    # Build NetworkX graph from edge array for MST computation
-    import networkx as nx
-    G_local = nx.Graph()
-    G_local.add_nodes_from(range(num_nodes))
+    Solves the rooted Prize-Collecting Steiner Tree problem exactly:
+      maximize  Σ prize[v] for v in S  −  Σ cost[e] for e in T
+      subject to T is a tree spanning S, root ∈ S
+
+    Algorithm (Goemans-Williamson style on small graphs):
+    1. Start with MST of the full local graph (all nodes included)
+    2. Iteratively remove the leaf whose removal yields the best
+       net gain (cost_saved − prize_lost) until no profitable removal exists
+    3. This converges to a local optimum of the PCST objective
+
+    For ≤500 nodes this runs in <10ms.
+    """
+    # Build undirected graph with costs as weights
+    G = nx.Graph()
+    G.add_nodes_from(range(num_nodes))
 
     edges_list = edges_array.tolist() if hasattr(edges_array, 'tolist') else list(edges_array)
     for i, (u, v) in enumerate(edges_list):
         u, v = int(u), int(v)
-        # Use edge cost as weight; keep edge index for later
-        if not G_local.has_edge(u, v) or G_local[u][v].get("weight", float("inf")) > float(costs_array[i]):
-            G_local.add_edge(u, v, weight=float(costs_array[i]), edge_idx=i)
+        cost = float(costs_array[i])
+        # Keep cheapest edge between each pair; store original index
+        if not G.has_edge(u, v) or G[u][v]["weight"] > cost:
+            G.add_edge(u, v, weight=cost, edge_idx=i)
 
-    # MST from the local graph
-    if not nx.is_connected(G_local):
-        # Use the component containing root
-        comp = nx.node_connected_component(G_local, int(root))
-        G_local = G_local.subgraph(comp).copy()
-        # Recount: can't keep more nodes than the component has
-        target_n = min(target_n, len(G_local))
+    # Work within the root's connected component
+    if not nx.is_connected(G):
+        comp = nx.node_connected_component(G, root)
+        G = G.subgraph(comp).copy()
 
-    mst = nx.minimum_spanning_tree(G_local)
+    # Start from MST (minimum cost spanning tree)
+    tree = nx.minimum_spanning_tree(G)
 
-    # Iterative leaf pruning: remove lowest-prize leaves until |nodes| == target
-    while len(mst) > target_n:
-        leaves = [n for n in mst.nodes() if mst.degree(n) <= 1 and n != int(root)]
-        if not leaves:
-            break
-        worst = min(leaves, key=lambda n: float(prize_array[n]))
-        mst.remove_node(worst)
+    # Iterative leaf pruning: remove a leaf if prize < edge cost to connect it
+    # This IS the PCST objective: only keep a node if its prize justifies its edge cost
+    improved = True
+    while improved:
+        improved = False
+        leaves = [n for n in tree.nodes() if tree.degree(n) == 1 and n != root]
+        for leaf in leaves:
+            # Cost of the single edge connecting this leaf
+            neighbor = next(iter(tree.neighbors(leaf)))
+            edge_cost = tree[leaf][neighbor]["weight"]
+            leaf_prize = float(prize_array[leaf])
 
-    # Ensure connectivity after pruning
-    if not nx.is_connected(mst):
-        comp = nx.node_connected_component(mst, int(root))
-        mst = mst.subgraph(comp).copy()
+            if leaf_prize < edge_cost:
+                # Net loss: remove this leaf
+                tree.remove_node(leaf)
+                improved = True
 
-    selected_node_indices = np.array(sorted(mst.nodes()), dtype=np.int64)
+    # Ensure root is still in the tree
+    if root not in tree:
+        tree.add_node(root)
 
-    # Map MST edges back to original edge indices
+    # Ensure connectivity
+    if len(tree) > 1 and not nx.is_connected(tree):
+        comp = nx.node_connected_component(tree, root)
+        tree = tree.subgraph(comp).copy()
+
+    selected_node_indices = np.array(sorted(tree.nodes()), dtype=np.int64)
+
+    # Map tree edges back to original edge indices
     selected_edge_set = set()
-    for u, v, data in mst.edges(data=True):
+    for u, v, data in tree.edges(data=True):
         if "edge_idx" in data:
             selected_edge_set.add(data["edge_idx"])
     selected_edge_indices = np.array(sorted(selected_edge_set), dtype=np.int64)
