@@ -7,10 +7,27 @@ aggressive pruning (only root node returned). Instead, we BFS from seed
 nodes to extract a ~300-node local neighborhood, then run PCST on that.
 """
 
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Tuple
 import networkx as nx
 import numpy as np
 from collections import deque
+
+
+def normalize_pcst_inputs(
+    edges: np.ndarray,
+    prizes: np.ndarray,
+    costs: np.ndarray,
+    root: int,
+    num_clusters: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int, int]:
+    """Ensure all pcst_fast inputs have correct dtypes (int64/float64)."""
+    return (
+        np.asarray(edges, dtype=np.int64),
+        np.asarray(prizes, dtype=np.float64),
+        np.asarray(costs, dtype=np.float64),
+        int(root),
+        int(num_clusters),
+    )
 
 
 class PCSTSolver:
@@ -210,13 +227,18 @@ class PCSTSolver:
               f"seed_floor={seed_floor:.1f}, pruning='{effective_pruning}', "
               f"{nonzero_prizes} high-prize nodes, root={best_seed[:30]}...")
 
+        # Normalize dtypes for pcst_fast (requires int64/float64)
+        edges_array, prize_array, costs_array, root, num_clusters = normalize_pcst_inputs(
+            edges_array, prize_array, costs_array, root, 1
+        )
+
         # Run PCST with active pruning
         selected_nodes, selected_edges = pcst_fast.pcst_fast(
             edges_array,
             prize_array,
             costs_array,
             root,
-            1,                   # num_clusters (ignored with root)
+            num_clusters,        # num_clusters (ignored with root)
             effective_pruning,   # pruning strategy
             0                    # verbosity
         )
