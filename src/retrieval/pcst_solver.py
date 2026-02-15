@@ -175,7 +175,7 @@ class PCSTSolver:
         if not edges:
             return G.subgraph([s for s in seed_nodes if s in G]).copy()
 
-        edges_array = np.array(edges, dtype=np.int32)
+        edges_array = np.array(edges, dtype=np.int64)
         costs_array = np.full(len(edges), self.cost, dtype=np.float64)
 
         # Build prize array — base prize for ALL nodes so intermediates survive pruning
