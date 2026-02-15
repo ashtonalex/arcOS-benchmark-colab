@@ -222,6 +222,9 @@ class PCSTSolver:
         )
 
         print(f"  PCST output: {len(selected_nodes)} nodes, {len(selected_edges)} edges")
+        print(f"  DEBUG pcst_fast returned: dtype={selected_nodes.dtype}, shape={selected_nodes.shape}, "
+              f"min={selected_nodes.min()}, max={selected_nodes.max()}, "
+              f"first10={selected_nodes[:10].tolist()}, last5={selected_nodes[-5:].tolist()}")
 
         # Convert back to node names (cast to int to avoid numpy.int64 dict lookup issues)
         unique_indices = sorted(set(int(i) for i in selected_nodes))
