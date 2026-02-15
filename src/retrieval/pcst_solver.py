@@ -224,13 +224,28 @@ class PCSTSolver:
         print(f"  PCST output: {len(selected_nodes)} nodes, {len(selected_edges)} edges")
 
         # Convert back to node names (cast to int to avoid numpy.int64 dict lookup issues)
-        selected_node_names = [idx_to_node[int(i)] for i in selected_nodes if int(i) in idx_to_node]
+        unique_indices = sorted(set(int(i) for i in selected_nodes))
+        selected_node_names = [idx_to_node[i] for i in unique_indices if i in idx_to_node]
+
+        print(f"  Mapped: {len(selected_nodes)} raw -> {len(unique_indices)} unique indices "
+              f"-> {len(selected_node_names)} named, G has {len(G)} nodes")
 
         if not selected_node_names:
             selected_node_names = valid_seeds_in_local
 
         # Extract subgraph (preserve original directed edges)
         subgraph = G.subgraph(selected_node_names).copy()
+
+        if len(subgraph) != len(selected_node_names):
+            # Debug: find which names are missing from G
+            g_nodes = set(G.nodes())
+            missing = [n for n in selected_node_names if n not in g_nodes]
+            print(f"  WARNING: subgraph={len(subgraph)} != selected={len(selected_node_names)}, "
+                  f"{len(missing)} names missing from G")
+            if missing[:3]:
+                sample_g = list(g_nodes)[:2]
+                print(f"    Missing sample: {missing[:3]}")
+                print(f"    Missing type: {type(missing[0])}, G node type: {type(sample_g[0]) if sample_g else 'N/A'}")
 
         return subgraph
 

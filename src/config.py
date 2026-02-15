@@ -68,7 +68,7 @@ class BenchmarkConfig:
     pcst_local_budget: int = 300  # BFS neighborhood size before PCST
     pcst_cost: float = 1.0  # Edge cost for PCST
     pcst_pruning: str = "gw"  # PCST pruning strategy: 'none', 'gw', or 'strong'
-    pcst_base_prize_ratio: float = 5.0  # base_prize = cost * ratio (intermediates survive pruning)
+    pcst_base_prize_ratio: float = 1.0  # base_prize = cost * ratio (breakeven for intermediates)
 
     # ========== GNN (Phase 3) ==========
     gnn_hidden_dim: int = 256
