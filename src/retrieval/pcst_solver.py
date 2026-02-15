@@ -222,15 +222,29 @@ class PCSTSolver:
         )
 
         print(f"  PCST output: {len(selected_nodes)} nodes, {len(selected_edges)} edges")
-        print(f"  DEBUG pcst_fast returned: dtype={selected_nodes.dtype}, shape={selected_nodes.shape}, "
+        print(f"  DEBUG nodes: dtype={selected_nodes.dtype}, shape={selected_nodes.shape}, "
               f"min={selected_nodes.min()}, max={selected_nodes.max()}, "
-              f"first10={selected_nodes[:10].tolist()}, last5={selected_nodes[-5:].tolist()}")
+              f"first5={selected_nodes[:5].tolist()}")
+        print(f"  DEBUG edges: dtype={selected_edges.dtype}, shape={selected_edges.shape}, "
+              f"min={selected_edges.min() if len(selected_edges) > 0 else 'N/A'}, "
+              f"max={selected_edges.max() if len(selected_edges) > 0 else 'N/A'}, "
+              f"first5={selected_edges[:5].tolist()}")
 
-        # Convert back to node names (cast to int to avoid numpy.int64 dict lookup issues)
-        unique_indices = sorted(set(int(i) for i in selected_nodes))
+        # pcst_fast returns cluster labels in selected_nodes (not node indices).
+        # Derive actual node indices from selected_edges (edge indices into edges_array).
+        node_index_set = set()
+        node_index_set.add(root)  # Root is always included
+        for edge_idx in selected_edges:
+            ei = int(edge_idx)
+            if 0 <= ei < len(edges):
+                u, v = edges[ei]
+                node_index_set.add(int(u))
+                node_index_set.add(int(v))
+
+        unique_indices = sorted(node_index_set)
         selected_node_names = [idx_to_node[i] for i in unique_indices if i in idx_to_node]
 
-        print(f"  Mapped: {len(selected_nodes)} raw -> {len(unique_indices)} unique indices "
+        print(f"  Mapped: {len(selected_edges)} edges -> {len(unique_indices)} unique node indices "
               f"-> {len(selected_node_names)} named, G has {len(G)} nodes")
 
         if not selected_node_names:
