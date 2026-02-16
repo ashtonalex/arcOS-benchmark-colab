@@ -251,12 +251,10 @@ class Retriever:
             cost=config.pcst_cost,
             budget=config.pcst_budget,
             local_budget=config.pcst_local_budget,
-            pruning=config.pcst_pruning,
-            base_prize_ratio=config.pcst_base_prize_ratio
+            pruning=config.pcst_pruning
         )
         print(f"✓ PCST solver ready (cost: {config.pcst_cost}, budget: {config.pcst_budget}, "
-              f"local: {config.pcst_local_budget}, pruning: {config.pcst_pruning}, "
-              f"base_prize_ratio: {config.pcst_base_prize_ratio})")
+              f"local: {config.pcst_local_budget}, pruning: {config.pcst_pruning})")
 
         # 6. Create retriever instance
         retriever = cls(
