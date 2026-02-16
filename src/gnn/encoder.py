@@ -87,7 +87,7 @@ class GATv2Encoder(nn.Module):
         h = self.input_proj(x)  # [num_nodes, hidden_dim]
 
         # Query conditioning: broadcast and add to all nodes
-        query_proj = self.query_proj(query_embedding)  # [hidden_dim]
+        query_proj = self.query_proj(query_embedding.view(-1))  # [hidden_dim]
         h = h + query_proj.unsqueeze(0)  # Broadcasting
 
         # Collect attention weights across layers
@@ -247,7 +247,7 @@ class GraphSAGEEncoder(nn.Module):
         h = self.input_proj(x)
 
         # Query conditioning
-        query_proj = self.query_proj(query_embedding)
+        query_proj = self.query_proj(query_embedding.view(-1))
         h = h + query_proj.unsqueeze(0)
 
         # Pass through SAGE layers with residual connections
