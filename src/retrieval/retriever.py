@@ -4,7 +4,6 @@ Retriever orchestration layer.
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional
-import math
 import time
 import networkx as nx
 import numpy as np
@@ -105,43 +104,23 @@ class Retriever:
                 seed_entities.append(entity)
                 similarity_scores[entity] = score
 
-        # 4. Prizes — logarithmic scaling to prevent top-rank dominance
+        # 4. Prizes — raw cosine similarity scores (0 to 1)
         #
-        #   Old linear:  rank 1 → 150, rank 15 → 10   (15:1 ratio)
-        #   New log:     rank 1 →  55, rank 15 → 14   ( 4:1 ratio)
-        #   q_entity:    fixed 100  (always highest)
+        #   Prizes and edge costs on the same scale gives PCST meaningful
+        #   signal. A node with cosine sim 0.2 doesn't justify a 0.3 edge cost.
+        #   No 1-hop neighbor prizes — PCST keeps relay nodes organically
+        #   when they cheaply connect high-prize targets.
         prizes = {}
-        top_k = self.config.top_k_entities
+        similarity_threshold = 0.4
 
-        # Topic entities get a fixed high prize
+        # Topic entities: perfect relevance
         for entity in q_entity_names:
-            prizes[entity] = 100.0
+            prizes[entity] = 1.0
 
-        # k-NN entities: log-scaled rank prize + similarity prize
-        for rank, (entity, score) in enumerate(top_k_results, start=1):
-            if entity not in prizes:
-                rank_prize = math.log1p(top_k - rank + 1) * 20.0
-                score_prize = max(float(score), 0.0) * 20.0
-                prizes[entity] = rank_prize + score_prize
-
-        # 1-hop neighbor prizes (net-positive vs edge cost, but below seed prizes)
-        max_neighbors_per_seed = 20
-        for seed in seed_entities:
-            if seed in self.unified_graph:
-                count = 0
-                for neighbor in self.unified_graph.successors(seed):
-                    if neighbor not in prizes:
-                        prizes[neighbor] = 3.0
-                        count += 1
-                        if count >= max_neighbors_per_seed:
-                            break
-                count = 0
-                for neighbor in self.unified_graph.predecessors(seed):
-                    if neighbor not in prizes:
-                        prizes[neighbor] = 3.0
-                        count += 1
-                        if count >= max_neighbors_per_seed:
-                            break
+        # k-NN entities: raw cosine similarity, filtered by threshold
+        for entity, score in top_k_results:
+            if entity not in prizes and score >= similarity_threshold:
+                prizes[entity] = float(score)
 
         # 5. Extract subgraph
         pcst_used = True
@@ -149,7 +128,8 @@ class Retriever:
             subgraph = self.pcst_solver.extract_subgraph(
                 self.unified_graph,
                 seed_entities,
-                prizes
+                prizes,
+                root_entities=list(q_entity_names) if q_entity_names else None
             )
         except Exception as e:
             print(f"⚠ PCST extraction failed: {e}, using BFS fallback")

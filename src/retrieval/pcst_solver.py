@@ -52,7 +52,8 @@ class PCSTSolver:
         self,
         G: nx.DiGraph,
         seed_nodes: List[str],
-        prizes: Dict[str, float]
+        prizes: Dict[str, float],
+        root_entities: List[str] = None
     ) -> nx.DiGraph:
         """
         Extract connected subgraph using PCST.
@@ -86,7 +87,8 @@ class PCSTSolver:
 
         # Step 2: PCST on local graph
         try:
-            subgraph = self._pcst_extract(local_graph, valid_seeds, prizes)
+            subgraph = self._pcst_extract(local_graph, valid_seeds, prizes,
+                                          root_entities=root_entities)
         except Exception as e:
             print(f"  PCST failed ({e}), falling back to BFS")
             subgraph = self._bfs_fallback(G, valid_seeds)
@@ -97,7 +99,8 @@ class PCSTSolver:
                   f"retrying with pruning='none'")
             try:
                 subgraph = self._pcst_extract(
-                    local_graph, valid_seeds, prizes, pruning_override="none")
+                    local_graph, valid_seeds, prizes, pruning_override="none",
+                    root_entities=root_entities)
             except Exception:
                 subgraph = nx.DiGraph()
 
@@ -153,7 +156,8 @@ class PCSTSolver:
         G: nx.DiGraph,
         seed_nodes: List[str],
         prizes: Dict[str, float],
-        pruning_override: str = None
+        pruning_override: str = None,
+        root_entities: List[str] = None
     ) -> nx.DiGraph:
         """
         Run PCST on a localized graph via pcst_fast.
@@ -186,21 +190,30 @@ class PCSTSolver:
             if node in node_to_idx:
                 prize_array[node_to_idx[node]] = max(score, 0.0)
 
-        # Root at the highest-prize seed
+        # Root selection: prefer topic entity, fall back to highest-prize seed
         valid_seeds_in_local = [s for s in seed_nodes if s in node_to_idx]
         if not valid_seeds_in_local:
             return nx.DiGraph()
 
-        best_seed = max(valid_seeds_in_local,
-                        key=lambda s: prizes.get(s, 0.0))
-        root = int(node_to_idx[best_seed])
+        root_node = None
+        if root_entities:
+            for entity in root_entities:
+                if entity in node_to_idx:
+                    root_node = entity
+                    break
+
+        if root_node is None:
+            root_node = max(valid_seeds_in_local,
+                            key=lambda s: prizes.get(s, 0.0))
+
+        root = int(node_to_idx[root_node])
 
         effective_pruning = pruning_override or self.pruning
         scored_nodes = int(np.count_nonzero(prize_array))
         print(f"  PCST input: {num_nodes} nodes, {len(edges)} edges, "
               f"cost={self.cost:.2f}, pruning='{effective_pruning}', "
               f"{scored_nodes} scored nodes, "
-              f"root={best_seed[:30]}...")
+              f"root={root_node[:30]}...")
 
         # Run pcst_fast
         result_nodes, result_edges = pcst_fast.pcst_fast(
@@ -210,16 +223,22 @@ class PCSTSolver:
         result_nodes = np.asarray(result_nodes, dtype=np.int64)
 
         # Detect labels-vs-indices return format:
-        # Labels format returns one entry per node (len == num_nodes);
-        # indices format returns only selected nodes (len < num_nodes)
-        if len(result_nodes) == num_nodes and num_nodes > self.budget:
-            root_label = result_nodes[root]
+        # Indices are unique node IDs (no duplicates possible).
+        # Labels are cluster membership IDs (many duplicates like 0,0,0,1,0).
+        # Previous heuristic (len == num_nodes) failed on disconnected graphs
+        # where labels covered only one component.
+        n_unique = len(np.unique(result_nodes))
+
+        if n_unique < len(result_nodes):
+            # Labels format: duplicates present, extract root's cluster
+            root_label = result_nodes[root] if root < len(result_nodes) else 0
             selected = np.where(result_nodes == root_label)[0]
             print(f"  PCST returned labels format, "
                   f"extracted {len(selected)} nodes in root cluster")
         else:
+            # Indices format: all unique values, use directly
             selected = result_nodes
-            print(f"  PCST output: {len(selected)} nodes")
+            print(f"  PCST output: {len(selected)} nodes (indices format)")
 
         # Map indices back to node names
         selected_names = [nodes[i] for i in selected
