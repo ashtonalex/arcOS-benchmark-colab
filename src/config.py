@@ -65,8 +65,8 @@ class BenchmarkConfig:
     embedding_dim: int = 384
     top_k_entities: int = 15
     pcst_budget: int = 70  # Max nodes in extracted subgraph
-    pcst_local_budget: int = 300  # BFS neighborhood size before PCST
-    pcst_cost: float = 0.3  # Edge cost for PCST (tuned to cosine sim prize scale 0-1)
+    pcst_local_budget: int = 500  # BFS neighborhood size before PCST
+    pcst_cost: float = 0.1  # Edge cost for PCST (tuned to cosine sim prize scale 0-1)
     pcst_pruning: str = "gw"  # PCST pruning strategy: 'none', 'gw', or 'strong'
     pcst_edge_weight_alpha: float = 0.5  # Query-aware edge cost scaling [0,1]. 0=uniform costs (default)
     pcst_bridge_components: bool = True  # Bridge disconnected PCST components via shortest paths

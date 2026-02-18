@@ -22,8 +22,8 @@ from collections import deque
 class PCSTSolver:
     """Extract connected subgraphs using Prize-Collecting Steiner Tree."""
 
-    def __init__(self, cost: float = 0.3, budget: int = 70,
-                 local_budget: int = 300, pruning: str = "gw",
+    def __init__(self, cost: float = 0.1, budget: int = 70,
+                 local_budget: int = 500, pruning: str = "gw",
                  edge_weight_alpha: float = 0.0,
                  bridge_components: bool = True,
                  bridge_max_hops: int = 4,
@@ -35,6 +35,7 @@ class PCSTSolver:
             cost: Base edge cost for PCST. Controls selectivity:
                   higher = more aggressive pruning (fewer nodes kept).
                   Should be tuned relative to prize scale (cosine sim 0-1).
+                  Default 0.1 allows traversal of ~4 edges for a 0.4-prize node.
             budget: Maximum nodes in extracted subgraph.
             local_budget: Max nodes for BFS localization before PCST.
             pruning: PCST pruning strategy ('none', 'gw', or 'strong').
@@ -93,7 +94,8 @@ class PCSTSolver:
             return nx.DiGraph()
 
         # Step 1: Localize — reduce graph to small neighborhood
-        local_graph = self._localize(G, valid_seeds)
+        #   Prioritize root entities so PCST root is well-connected
+        local_graph = self._localize(G, valid_seeds, root_entities=root_entities)
         if self.verbose:
             print(f"  Localized: {len(local_graph)} nodes, "
                   f"{local_graph.number_of_edges()} edges")
@@ -168,8 +170,15 @@ class PCSTSolver:
 
         return subgraph
 
-    def _localize(self, G: nx.DiGraph, seed_nodes: List[str]) -> nx.DiGraph:
-        """Multi-source BFS to extract local neighborhood around seeds.
+    def _localize(self, G: nx.DiGraph, seed_nodes: List[str],
+                   root_entities: Optional[List[str]] = None) -> nx.DiGraph:
+        """Two-phase BFS to extract local neighborhood focused on the root.
+
+        Phase 1: BFS from root entities using ~60% of local_budget.
+                 This ensures the PCST root has a dense, well-connected
+                 neighborhood so the solver can build meaningful trees.
+        Phase 2: BFS from remaining seeds using the rest of the budget.
+                 Brings in k-NN seed neighborhoods for prize coverage.
 
         Traverses both edge directions to treat the graph as undirected,
         without creating an expensive undirected copy of the full graph.
@@ -177,19 +186,58 @@ class PCSTSolver:
         visited = set()
         queue = deque()
 
-        for seed in seed_nodes:
-            if seed in G:
-                visited.add(seed)
-                queue.append(seed)
+        # Identify valid root nodes for phase 1
+        root_nodes = []
+        if root_entities:
+            root_nodes = [r for r in root_entities if r in G]
 
-        while queue and len(visited) < self.local_budget:
-            node = queue.popleft()
-            for neighbor in chain(G.successors(node), G.predecessors(node)):
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    queue.append(neighbor)
-                    if len(visited) >= self.local_budget:
-                        break
+        if root_nodes:
+            # Phase 1: BFS from root entities (60% of budget)
+            root_budget = int(self.local_budget * 0.6)
+
+            for root in root_nodes:
+                visited.add(root)
+                queue.append(root)
+
+            while queue and len(visited) < root_budget:
+                node = queue.popleft()
+                for neighbor in chain(G.successors(node), G.predecessors(node)):
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+                        if len(visited) >= root_budget:
+                            break
+
+            # Phase 2: BFS from remaining seeds (40% of budget)
+            queue.clear()
+            for seed in seed_nodes:
+                if seed in G and seed not in visited:
+                    visited.add(seed)
+                    queue.append(seed)
+
+            while queue and len(visited) < self.local_budget:
+                node = queue.popleft()
+                for neighbor in chain(G.successors(node), G.predecessors(node)):
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+                        if len(visited) >= self.local_budget:
+                            break
+        else:
+            # No root entities — uniform BFS from all seeds (original behavior)
+            for seed in seed_nodes:
+                if seed in G:
+                    visited.add(seed)
+                    queue.append(seed)
+
+            while queue and len(visited) < self.local_budget:
+                node = queue.popleft()
+                for neighbor in chain(G.successors(node), G.predecessors(node)):
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+                        if len(visited) >= self.local_budget:
+                            break
 
         return G.subgraph(list(visited)).copy()
 
