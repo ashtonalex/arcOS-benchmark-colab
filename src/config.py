@@ -66,13 +66,13 @@ class BenchmarkConfig:
     top_k_entities: int = 15
     pcst_budget: int = 70  # Max nodes in extracted subgraph
     pcst_local_budget: int = 500  # BFS neighborhood size before PCST
-    pcst_cost: float = 0.05  # Edge cost for PCST. With cosine sim prizes (0-1),
+    pcst_cost: float = 0.015  # Edge cost for PCST. With cosine sim prizes (0-1),
                               # 0.05 allows a 4-hop path to a 0.4-prize node (net +0.20).
                               # Was 0.10 but that made multi-hop paths unprofitable.
     pcst_pruning: str = "gw"  # PCST pruning strategy: 'none', 'gw', or 'strong'
     pcst_edge_weight_alpha: float = 0.5  # Query-aware edge cost scaling [0,1]. 0=uniform costs (default)
     pcst_bridge_components: bool = True  # Bridge disconnected PCST components via shortest paths
-    pcst_bridge_max_hops: int = 4  # Max relay hops when bridging disconnected components
+    pcst_bridge_max_hops: int = 6  # Max relay hops when bridging disconnected components
 
     # ========== GNN (Phase 3) ==========
     gnn_hidden_dim: int = 256
