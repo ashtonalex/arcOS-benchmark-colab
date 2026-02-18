@@ -130,6 +130,19 @@ class GNNModel:
             print(f"✓ Training data: {len(train_pyg_data)} examples")
             print(f"✓ Validation data: {len(val_pyg_data)} examples\n")
 
+            # After PyG data is saved, free the sentence transformer from GPU.
+            # It's only needed for query embedding (already baked into PyG data)
+            # and won't be used again until inference. Moving to CPU frees ~90 MB
+            # of GPU VRAM before the GNN model is initialized for training.
+            try:
+                retriever.text_embedder.model.to("cpu")
+                retriever.text_embedder.device = "cpu"
+            except Exception:
+                pass
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
             # Create data loaders
             train_loader = DataLoader(
                 train_pyg_data,
@@ -188,6 +201,18 @@ class GNNModel:
         pyg_data_list = []
         skipped_no_answer = 0
 
+        # Pre-compute all question embeddings in a single batched call.
+        # This avoids 2x per-example GPU inference (retrieve + convert both
+        # call embed_texts individually, fragmenting GPU memory over thousands
+        # of single-sample forward passes).
+        print("  Pre-computing query embeddings in batch...")
+        all_questions = [ex["question"] for ex in dataset]
+        query_embeddings = retriever.text_embedder.embed_texts(
+            all_questions, batch_size=64, show_progress=True
+        )
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         for idx, example in enumerate(tqdm(dataset, desc="Converting to PyG")):
             question = example["question"]
             answer_entities = example.get("a_entity", [])
@@ -197,15 +222,20 @@ class GNNModel:
             if isinstance(q_entities, str):
                 q_entities = [q_entities]
 
-            # Retrieve subgraph (use topic entity as primary seed)
+            precomputed_qe = query_embeddings[idx]
+
+            # Pre-initialize so the finally block can safely del it even if
+            # retrieve() raises before the assignment.
+            retrieved = None
             try:
                 retrieved = retriever.retrieve(question, q_entity=q_entities)
 
-                # Convert to PyG Data
+                # Convert to PyG Data, reusing the pre-computed query embedding
                 data = converter.convert(
                     retrieved.subgraph,
                     question,
                     answer_entities=answer_entities,
+                    precomputed_query_embedding=precomputed_qe,
                 )
 
                 # Skip examples where no answer node landed in the subgraph.
@@ -213,17 +243,25 @@ class GNNModel:
                 # actively suppresses recall and poisons attention scores.
                 if data.y is not None and data.y.sum().item() == 0:
                     skipped_no_answer += 1
-                    continue
-
-                pyg_data_list.append(data)
+                else:
+                    pyg_data_list.append(data)
 
             except Exception as e:
                 print(f"Warning: Failed to process example '{question}': {e}")
-                continue
+            finally:
+                # Explicitly release the retrieved subgraph. NetworkX DiGraph
+                # objects have cyclic dict references that refcounting alone
+                # cannot free — only the cyclic GC can. Deleting here ensures
+                # the reference is dropped immediately so the next gc.collect()
+                # can actually reclaim the memory.
+                del retrieved
 
-            # Periodic GC to release intermediate allocations
-            if idx % 200 == 0 and idx > 0:
+            # Periodic GC to release accumulated NetworkX subgraph objects.
+            # Every 20 examples (not 200) to keep the heap spike small.
+            if idx % 20 == 0 and idx > 0:
                 gc.collect()
+            if idx % 100 == 0 and idx > 0 and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         if skipped_no_answer > 0:
             total = skipped_no_answer + len(pyg_data_list)

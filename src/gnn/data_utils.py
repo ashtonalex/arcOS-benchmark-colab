@@ -55,6 +55,7 @@ class SubgraphConverter:
         subgraph: nx.DiGraph,
         question: str,
         answer_entities: Optional[List[str]] = None,
+        precomputed_query_embedding: Optional[np.ndarray] = None,
     ) -> Data:
         """
         Convert NetworkX subgraph to PyG Data object.
@@ -114,9 +115,13 @@ class SubgraphConverter:
             edge_index = torch.zeros((2, 0), dtype=torch.long)
             edge_attr = torch.zeros((0, self.embedding_dim), dtype=torch.float32)
 
-        # Encode question
-        query_embedding = self.text_embedder.embed_texts([question])[0]
-        query_embedding = torch.tensor(query_embedding, dtype=torch.float32).unsqueeze(0)  # [1, dim] for proper PyG batching
+        # Encode question (use pre-computed embedding if provided to avoid
+        # redundant GPU inference when called from _prepare_training_data)
+        if precomputed_query_embedding is not None:
+            raw_embedding = precomputed_query_embedding
+        else:
+            raw_embedding = self.text_embedder.embed_texts([question])[0]
+        query_embedding = torch.tensor(raw_embedding, dtype=torch.float32).unsqueeze(0)  # [1, dim] for proper PyG batching
 
         # Build labels if answer entities provided
         if answer_entities is not None:

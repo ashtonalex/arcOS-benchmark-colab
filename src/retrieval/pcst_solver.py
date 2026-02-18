@@ -3,13 +3,20 @@ PCST subgraph extraction using Prize-Collecting Steiner Tree.
 
 Key design: Localize first, then run PCST on a small neighborhood.
 Running PCST on the full unified graph (1M+ nodes) is too slow.
-BFS from seed nodes extracts a ~300-node local neighborhood,
+BFS from seed nodes extracts a ~500-node local neighborhood,
 then PCST selects the optimal prize-maximizing subtree from that.
 
 Prize structure follows G-Retriever: prizes are raw cosine similarity
 scores (0 to 1) with zero base. Only nodes scored by the retriever
 get nonzero prizes. Intermediate relay nodes survive only if they
 connect high-prize nodes cheaply enough to justify the edge cost.
+
+Critical insight: k-NN seeds are semantically similar to the query
+but may be graph-distant from the root entity. The localized graph
+can be disconnected, leaving the root's component with no prized
+nodes. We fix this by computing LOCAL prizes: cosine similarity
+between the query embedding and entity embeddings for all nodes
+in the root's connected component.
 """
 
 from typing import List, Dict, Optional, Set
@@ -27,6 +34,7 @@ class PCSTSolver:
                  edge_weight_alpha: float = 0.0,
                  bridge_components: bool = True,
                  bridge_max_hops: int = 4,
+                 local_prize_threshold: float = 0.3,
                  verbose: bool = True):
         """
         Initialize PCST solver.
@@ -45,6 +53,9 @@ class PCSTSolver:
             bridge_components: If True, attempt to bridge disconnected PCST
                 components via shortest paths before falling back to largest.
             bridge_max_hops: Max intermediate relay nodes when bridging.
+            local_prize_threshold: Min cosine similarity for local prize
+                assignment. Nodes in root's component with query similarity
+                above this threshold get prizes.
             verbose: Print debug info per retrieval. Set False for batch loops.
         """
         self.cost = cost
@@ -54,6 +65,7 @@ class PCSTSolver:
         self.edge_weight_alpha = edge_weight_alpha
         self.bridge_components = bridge_components
         self.bridge_max_hops = bridge_max_hops
+        self.local_prize_threshold = local_prize_threshold
         self.verbose = verbose
 
     def extract_subgraph(
@@ -63,16 +75,19 @@ class PCSTSolver:
         prizes: Dict[str, float],
         root_entities: List[str] = None,
         query_embedding: Optional[np.ndarray] = None,
-        relation_embeddings: Optional[Dict[str, np.ndarray]] = None
+        relation_embeddings: Optional[Dict[str, np.ndarray]] = None,
+        entity_embeddings: Optional[Dict[str, np.ndarray]] = None,
     ) -> nx.DiGraph:
         """
         Extract connected subgraph using PCST.
 
         Pipeline:
-        1. Localize: BFS from seeds to ~local_budget node neighborhood
-        2. PCST: Select optimal subtree on the local graph
-        3. Budget: Trim if over budget via leaf pruning
-        4. Connectivity: Bridge disconnected components or keep largest
+        1. Localize: BFS from root to ~local_budget node neighborhood
+        2. Extract root's connected component
+        3. Compute local prizes via query-entity cosine similarity
+        4. PCST: Select optimal subtree on the root's component
+        5. Budget: Trim if over budget via leaf pruning
+        6. Connectivity: Bridge disconnected components or keep largest
 
         Args:
             G: Full NetworkX graph (can be 1M+ nodes)
@@ -80,7 +95,10 @@ class PCSTSolver:
             prizes: node_name -> cosine similarity score (0 to 1)
             root_entities: Preferred root entities for PCST
             query_embedding: Query vector for edge weight normalization
+                and local prize computation
             relation_embeddings: Dict mapping relation names to embedding vectors
+            entity_embeddings: Dict mapping entity names to embedding vectors.
+                Used to compute local prizes within root's component.
 
         Returns:
             Connected NetworkX subgraph (<= budget nodes)
@@ -93,16 +111,35 @@ class PCSTSolver:
             print("Warning: no valid seed nodes in graph")
             return nx.DiGraph()
 
-        # Step 1: Localize — reduce graph to small neighborhood
-        #   Prioritize root entities so PCST root is well-connected
+        # Step 1: Localize — BFS from root entity to fill local_budget
         local_graph = self._localize(G, valid_seeds, root_entities=root_entities)
         if self.verbose:
             print(f"  Localized: {len(local_graph)} nodes, "
                   f"{local_graph.number_of_edges()} edges")
 
-        # Step 2: PCST on local graph
+        # Step 2: Extract root's connected component for PCST
+        root_node = self._pick_root(local_graph, valid_seeds, root_entities, prizes)
+        pcst_graph, n_components = self._root_component(local_graph, root_node)
+
+        # Step 3: Compute local prizes — score nodes in root's component
+        #   by cosine similarity to query using entity embeddings.
+        #   This is critical: k-NN prizes are from global search and may
+        #   all be in disconnected components unreachable from root.
+        local_prizes = self._compute_local_prizes(
+            pcst_graph, prizes, query_embedding, entity_embeddings)
+
+        if self.verbose:
+            global_in_comp = sum(1 for n in prizes if n in pcst_graph)
+            local_only = sum(1 for n in local_prizes
+                             if n not in prizes and local_prizes[n] > 0)
+            print(f"  Root component: {len(pcst_graph)} nodes "
+                  f"({n_components} components in localized graph)")
+            print(f"  Prizes: {global_in_comp} global (k-NN) + "
+                  f"{local_only} local (query-entity sim) in root component")
+
+        # Step 4: PCST on root's component
         try:
-            subgraph = self._pcst_extract(local_graph, valid_seeds, prizes,
+            subgraph = self._pcst_extract(pcst_graph, valid_seeds, local_prizes,
                                           root_entities=root_entities,
                                           query_embedding=query_embedding,
                                           relation_embeddings=relation_embeddings)
@@ -112,50 +149,51 @@ class PCSTSolver:
             subgraph = self._bfs_fallback(G, valid_seeds,
                                           root_entities=root_entities)
 
-        # Step 3: Validate minimum size — retry with relaxed pruning
+        # Step 5: Validate minimum size — retry with relaxed pruning
         if len(subgraph) < min(len(valid_seeds), 3):
             if self.verbose:
                 print(f"  PCST too small ({len(subgraph)} nodes), "
                       f"retrying with pruning='none'")
             try:
                 subgraph = self._pcst_extract(
-                    local_graph, valid_seeds, prizes, pruning_override="none",
+                    pcst_graph, valid_seeds, local_prizes,
+                    pruning_override="none",
                     root_entities=root_entities,
                     query_embedding=query_embedding,
                     relation_embeddings=relation_embeddings)
             except Exception:
                 subgraph = nx.DiGraph()
 
-        # Step 3b: BFS fallback if still too small
+        # Step 5b: BFS fallback if still too small
         if len(subgraph) < min(len(valid_seeds), 3):
             if self.verbose:
                 print(f"  Still too small ({len(subgraph)} nodes), BFS fallback")
             subgraph = self._bfs_fallback(G, valid_seeds,
                                           root_entities=root_entities)
 
-        # Step 4: Enforce budget
+        # Step 6: Enforce budget
         if len(subgraph) > self.budget:
             pre = len(subgraph)
-            subgraph = self._trim_to_budget(subgraph, prizes)
+            subgraph = self._trim_to_budget(subgraph, local_prizes)
             if self.verbose:
                 print(f"  Trimmed: {pre} -> {len(subgraph)} nodes")
 
-        # Step 5: Ensure weak connectivity
+        # Step 7: Ensure weak connectivity
         if len(subgraph) > 1 and not nx.is_weakly_connected(subgraph):
             if self.bridge_components:
                 pre = len(subgraph)
-                subgraph = self._bridge_components(subgraph, local_graph, prizes)
+                subgraph = self._bridge_components(subgraph, pcst_graph,
+                                                   local_prizes)
                 if self.verbose:
                     print(f"  Bridged: {pre} -> {len(subgraph)} nodes")
-                # Re-trim after bridging added relay nodes
                 if len(subgraph) > self.budget:
-                    subgraph = self._trim_to_budget(subgraph, prizes)
-                # Final fallback: if still disconnected, keep largest
+                    subgraph = self._trim_to_budget(subgraph, local_prizes)
                 if len(subgraph) > 1 and not nx.is_weakly_connected(subgraph):
                     pre = len(subgraph)
                     subgraph = self._largest_component(subgraph)
                     if self.verbose:
-                        print(f"  Largest component fallback: {pre} -> {len(subgraph)} nodes")
+                        print(f"  Largest component fallback: "
+                              f"{pre} -> {len(subgraph)} nodes")
             else:
                 pre = len(subgraph)
                 subgraph = self._largest_component(subgraph)
@@ -170,15 +208,21 @@ class PCSTSolver:
 
         return subgraph
 
+    # ------------------------------------------------------------------
+    # Localization
+    # ------------------------------------------------------------------
+
     def _localize(self, G: nx.DiGraph, seed_nodes: List[str],
                    root_entities: Optional[List[str]] = None) -> nx.DiGraph:
-        """Two-phase BFS to extract local neighborhood focused on the root.
+        """BFS from root entity to extract dense local neighborhood.
 
-        Phase 1: BFS from root entities using ~60% of local_budget.
-                 This ensures the PCST root has a dense, well-connected
-                 neighborhood so the solver can build meaningful trees.
-        Phase 2: BFS from remaining seeds using the rest of the budget.
-                 Brings in k-NN seed neighborhoods for prize coverage.
+        Allocates the full local_budget to BFS from the root entity.
+        This ensures PCST has a single large connected component
+        centered on the root, rather than scattered disconnected islands
+        around k-NN seeds.
+
+        Remaining seeds are added as individual nodes (no BFS expansion)
+        to preserve their prize eligibility without fragmenting the graph.
 
         Traverses both edge directions to treat the graph as undirected,
         without creating an expensive undirected copy of the full graph.
@@ -186,60 +230,135 @@ class PCSTSolver:
         visited = set()
         queue = deque()
 
-        # Identify valid root nodes for phase 1
+        # BFS from root entities (primary)
         root_nodes = []
         if root_entities:
             root_nodes = [r for r in root_entities if r in G]
 
         if root_nodes:
-            # Phase 1: BFS from root entities (60% of budget)
-            root_budget = int(self.local_budget * 0.6)
-
             for root in root_nodes:
                 visited.add(root)
                 queue.append(root)
-
-            while queue and len(visited) < root_budget:
-                node = queue.popleft()
-                for neighbor in chain(G.successors(node), G.predecessors(node)):
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        queue.append(neighbor)
-                        if len(visited) >= root_budget:
-                            break
-
-            # Phase 2: BFS from remaining seeds (40% of budget)
-            queue.clear()
-            for seed in seed_nodes:
-                if seed in G and seed not in visited:
-                    visited.add(seed)
-                    queue.append(seed)
-
-            while queue and len(visited) < self.local_budget:
-                node = queue.popleft()
-                for neighbor in chain(G.successors(node), G.predecessors(node)):
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        queue.append(neighbor)
-                        if len(visited) >= self.local_budget:
-                            break
         else:
-            # No root entities — uniform BFS from all seeds (original behavior)
+            # No root — start from first valid seed
             for seed in seed_nodes:
                 if seed in G:
                     visited.add(seed)
                     queue.append(seed)
+                    break
 
-            while queue and len(visited) < self.local_budget:
-                node = queue.popleft()
-                for neighbor in chain(G.successors(node), G.predecessors(node)):
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        queue.append(neighbor)
-                        if len(visited) >= self.local_budget:
-                            break
+        # BFS expansion from root(s)
+        while queue and len(visited) < self.local_budget:
+            node = queue.popleft()
+            for neighbor in chain(G.successors(node), G.predecessors(node)):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+                    if len(visited) >= self.local_budget:
+                        break
+
+        # Add remaining seed nodes (no expansion) so they can receive prizes
+        for seed in seed_nodes:
+            if seed in G and seed not in visited:
+                visited.add(seed)
 
         return G.subgraph(list(visited)).copy()
+
+    # ------------------------------------------------------------------
+    # Root component extraction
+    # ------------------------------------------------------------------
+
+    def _pick_root(self, G: nx.DiGraph, seed_nodes: List[str],
+                   root_entities: Optional[List[str]],
+                   prizes: Dict[str, float]) -> str:
+        """Select root node from the localized graph."""
+        if root_entities:
+            for entity in root_entities:
+                if entity in G:
+                    return entity
+
+        valid = [s for s in seed_nodes if s in G]
+        if valid:
+            return max(valid, key=lambda s: prizes.get(s, 0.0))
+        return list(G.nodes())[0]
+
+    def _root_component(self, G: nx.DiGraph,
+                        root_node: str) -> tuple:
+        """Extract the weakly connected component containing root_node.
+
+        Returns:
+            (component_subgraph, total_num_components)
+        """
+        components = list(nx.weakly_connected_components(G))
+        n_components = len(components)
+
+        for comp in components:
+            if root_node in comp:
+                return G.subgraph(list(comp)).copy(), n_components
+
+        # Shouldn't happen, but fallback to full graph
+        return G.copy(), n_components
+
+    # ------------------------------------------------------------------
+    # Local prize computation
+    # ------------------------------------------------------------------
+
+    def _compute_local_prizes(
+        self,
+        root_component: nx.DiGraph,
+        global_prizes: Dict[str, float],
+        query_embedding: Optional[np.ndarray],
+        entity_embeddings: Optional[Dict[str, np.ndarray]],
+    ) -> Dict[str, float]:
+        """Compute prizes for nodes in root's component.
+
+        Merges two sources:
+        1. Global prizes (from k-NN search) — for nodes that happen to
+           be in the root's component.
+        2. Local prizes — cosine similarity between query embedding and
+           each node's entity embedding. This finds relevant nodes that
+           the global k-NN search missed because they weren't in the
+           top-K globally but ARE near the root in graph space.
+
+        Local prizes are essential: without them, the root's component
+        typically has zero prized nodes (only the root with prize 1.0),
+        causing PCST to return just the root every time.
+
+        Returns:
+            Dict[node_name, prize] for all nodes in root_component
+        """
+        prizes = {}
+        comp_nodes = set(root_component.nodes())
+
+        # 1. Copy global prizes for nodes in this component
+        for node, score in global_prizes.items():
+            if node in comp_nodes:
+                prizes[node] = max(score, 0.0)
+
+        # 2. Compute local prizes via query-entity cosine similarity
+        if query_embedding is not None and entity_embeddings is not None:
+            q_norm = np.linalg.norm(query_embedding)
+            if q_norm > 0:
+                q_unit = query_embedding / q_norm
+
+                for node in comp_nodes:
+                    if node in prizes:
+                        continue  # global prize already set
+                    emb = entity_embeddings.get(node)
+                    if emb is None:
+                        continue
+                    e_norm = np.linalg.norm(emb)
+                    if e_norm == 0:
+                        continue
+                    cos_sim = float(np.dot(q_unit, emb / e_norm))
+                    if cos_sim >= self.local_prize_threshold:
+                        prizes[node] = cos_sim
+
+        return prizes
+
+    # ------------------------------------------------------------------
+    # PCST core
+    # ------------------------------------------------------------------
 
     def _pcst_extract(
         self,
@@ -284,13 +403,13 @@ class PCSTSolver:
         else:
             costs_array = np.full(len(edges), self.cost, dtype=np.float64)
 
-        # Prizes: raw similarity scores, zero base
+        # Prizes: from merged global + local prizes
         prize_array = np.zeros(num_nodes, dtype=np.float64)
         for node, score in prizes.items():
             if node in node_to_idx:
                 prize_array[node_to_idx[node]] = max(score, 0.0)
 
-        # Root selection: prefer topic entity, fall back to highest-prize seed
+        # Root selection
         valid_seeds_in_local = [s for s in seed_nodes if s in node_to_idx]
         if not valid_seeds_in_local:
             return nx.DiGraph()
@@ -324,20 +443,16 @@ class PCSTSolver:
         result_nodes = np.asarray(result_nodes, dtype=np.int64)
 
         # Detect labels-vs-indices return format:
-        # - Labels format: one entry per node (len == num_nodes), values are
-        #   cluster IDs (-1 = unselected, 0+ = cluster membership).
-        # - Indices format: subset of selected node indices (len < num_nodes),
-        #   values are node IDs in [0, num_nodes).
-        # With root >= 0 and num_clusters=1, pcst_fast should return indices,
-        # but some versions return labels regardless.
+        # pcst_fast with root >= 0 should return indices, but some versions
+        # return a labels array of length num_nodes.
         if len(result_nodes) == num_nodes:
             # Labels format: extract root's cluster
             root_label = int(result_nodes[root])
             if root_label < 0:
-                # Root marked unselected — find the largest non-negative cluster
                 positive = result_nodes[result_nodes >= 0]
                 if len(positive) > 0:
-                    root_label = int(np.bincount(positive.astype(np.intp)).argmax())
+                    root_label = int(
+                        np.bincount(positive.astype(np.intp)).argmax())
                     selected = np.where(result_nodes == root_label)[0]
                 else:
                     selected = np.array([root], dtype=np.int64)
@@ -347,13 +462,13 @@ class PCSTSolver:
                 print(f"  PCST returned labels format, "
                       f"extracted {len(selected)} nodes in root cluster")
         else:
-            # Indices format: deduplicate and clamp to valid range
+            # Indices format
             selected = np.unique(result_nodes)
             selected = selected[(selected >= 0) & (selected < num_nodes)]
             if self.verbose:
                 print(f"  PCST output: {len(selected)} nodes (indices format)")
 
-        # Always include root node in result
+        # Always include root
         if root not in selected:
             selected = np.append(selected, root)
 
@@ -367,13 +482,16 @@ class PCSTSolver:
         subgraph = G.subgraph(selected_names).copy()
         return subgraph
 
+    # ------------------------------------------------------------------
+    # Fallback and trimming
+    # ------------------------------------------------------------------
+
     def _bfs_fallback(self, G: nx.DiGraph, seed_nodes: List[str],
                       root_entities: List[str] = None) -> nx.DiGraph:
         """BFS expansion from topic entity (or highest-degree seed) as PCST fallback.
 
         Traverses both edge directions without creating an undirected copy.
         """
-        # Prefer topic entity as BFS root, fall back to highest-degree seed
         best_seed = None
         if root_entities:
             for entity in root_entities:
@@ -405,7 +523,8 @@ class PCSTSolver:
             if seed in G and seed not in visited:
                 if len(visited) < self.budget:
                     visited.add(seed)
-                    for neighbor in chain(G.successors(seed), G.predecessors(seed)):
+                    for neighbor in chain(G.successors(seed),
+                                          G.predecessors(seed)):
                         if neighbor not in visited and len(visited) < self.budget:
                             visited.add(neighbor)
 
@@ -434,6 +553,10 @@ class PCSTSolver:
 
         return G
 
+    # ------------------------------------------------------------------
+    # Query-aware edge costs
+    # ------------------------------------------------------------------
+
     def _compute_query_aware_costs(
         self,
         G_dir: nx.DiGraph,
@@ -458,7 +581,6 @@ class PCSTSolver:
 
         for i, (u_idx, v_idx) in enumerate(edges):
             u, v = nodes[u_idx], nodes[v_idx]
-            # Look up relation from the directed graph
             rel = None
             if G_dir.has_edge(u, v):
                 rel = G_dir[u][v].get("relation")
@@ -470,10 +592,14 @@ class PCSTSolver:
                 r_norm = np.linalg.norm(r_emb)
                 if r_norm > 0:
                     cos_sim = float(np.dot(q_unit, r_emb / r_norm))
-                    cos_sim = max(cos_sim, 0.0)  # clamp negative similarities
+                    cos_sim = max(cos_sim, 0.0)
                     costs[i] = self.cost * (1.0 - alpha * cos_sim)
 
         return costs
+
+    # ------------------------------------------------------------------
+    # Component bridging
+    # ------------------------------------------------------------------
 
     def _bridge_components(
         self,
@@ -481,37 +607,25 @@ class PCSTSolver:
         local_graph: nx.DiGraph,
         prizes: Dict[str, float]
     ) -> nx.DiGraph:
-        """Bridge disconnected PCST components via shortest paths in local_graph.
-
-        For each smaller component that contains at least one prized node,
-        find the shortest path to the main (largest) component through the
-        local graph. If the path is within bridge_max_hops, add intermediate
-        relay nodes to connect the components.
-        """
+        """Bridge disconnected PCST components via shortest paths in local_graph."""
         components = list(nx.weakly_connected_components(subgraph))
         if len(components) <= 1:
             return subgraph
 
-        # Identify main component (largest)
         main_comp = max(components, key=len)
         main_nodes: Set[str] = set(main_comp)
         smaller_comps = [c for c in components if c is not main_comp]
 
-        # Build undirected view of local graph for shortest-path search
         local_und = local_graph.to_undirected(as_view=True)
-
         all_nodes = set(subgraph.nodes())
 
         for comp in smaller_comps:
-            # Only bridge components with at least one prized node
             has_prize = any(prizes.get(n, 0.0) > 0 for n in comp)
             if not has_prize:
                 continue
 
-            # BFS from comp nodes to find shortest path to main_nodes
             best_path = None
             visited: Set[str] = set(comp)
-            # (node, path_from_comp_boundary)
             frontier = deque()
             for n in comp:
                 if n in local_und:
@@ -537,7 +651,6 @@ class PCSTSolver:
             if best_path is not None:
                 all_nodes.update(best_path)
 
-        # Rebuild subgraph from local_graph (relay nodes only exist there)
         valid_nodes = [n for n in all_nodes if n in local_graph]
         return local_graph.subgraph(valid_nodes).copy()
 
