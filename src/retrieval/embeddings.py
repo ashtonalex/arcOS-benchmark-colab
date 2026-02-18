@@ -178,8 +178,14 @@ class TextEmbedder:
 
         print(f"Embedding {len(relation_list)} unique relations...")
 
-        # Batch-encode all relations
-        embeddings = self.embed_texts(relation_list, batch_size=batch_size, show_progress=True)
+        # Clean Freebase dot-notation into natural language before embedding
+        # e.g. "people.person.sibling_s" -> "sibling s"
+        # This ensures relation embeddings are semantically comparable to
+        # natural language query embeddings for edge weight normalization.
+        cleaned_list = [self._clean_relation(r) for r in relation_list]
+
+        # Batch-encode cleaned relations
+        embeddings = self.embed_texts(cleaned_list, batch_size=batch_size, show_progress=True)
 
         # Create mapping
         relation_embeddings = {
