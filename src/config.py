@@ -68,6 +68,9 @@ class BenchmarkConfig:
     pcst_local_budget: int = 300  # BFS neighborhood size before PCST
     pcst_cost: float = 0.3  # Edge cost for PCST (tuned to cosine sim prize scale 0-1)
     pcst_pruning: str = "gw"  # PCST pruning strategy: 'none', 'gw', or 'strong'
+    pcst_edge_weight_alpha: float = 0.5  # Query-aware edge cost scaling [0,1]. 0=uniform costs (default)
+    pcst_bridge_components: bool = True  # Bridge disconnected PCST components via shortest paths
+    pcst_bridge_max_hops: int = 4  # Max relay hops when bridging disconnected components
 
     # ========== GNN (Phase 3) ==========
     gnn_hidden_dim: int = 256
@@ -108,6 +111,10 @@ class BenchmarkConfig:
             raise ValueError(f"pcst_budget must be positive, got {self.pcst_budget}")
         if not 0 <= self.gnn_dropout <= 1:
             raise ValueError(f"gnn_dropout must be in [0, 1], got {self.gnn_dropout}")
+        if not 0 <= self.pcst_edge_weight_alpha <= 1:
+            raise ValueError(f"pcst_edge_weight_alpha must be in [0, 1], got {self.pcst_edge_weight_alpha}")
+        if self.pcst_bridge_max_hops <= 0:
+            raise ValueError(f"pcst_bridge_max_hops must be positive, got {self.pcst_bridge_max_hops}")
         if self.pcst_pruning not in ["none", "gw", "strong"]:
             raise ValueError(f"pcst_pruning must be 'none', 'gw', or 'strong', got {self.pcst_pruning}")
         if self.gnn_pooling not in ["attention", "mean"]:

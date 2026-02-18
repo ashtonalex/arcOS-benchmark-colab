@@ -138,7 +138,9 @@ class Retriever:
                 self.unified_graph,
                 seed_entities,
                 prizes,
-                root_entities=list(q_entity_names) if q_entity_names else None
+                root_entities=list(q_entity_names) if q_entity_names else None,
+                query_embedding=query_embedding,
+                relation_embeddings=self.relation_embeddings,
             )
         except Exception as e:
             print(f"⚠ PCST extraction failed: {e}, using BFS fallback")
@@ -246,10 +248,14 @@ class Retriever:
             cost=config.pcst_cost,
             budget=config.pcst_budget,
             local_budget=config.pcst_local_budget,
-            pruning=config.pcst_pruning
+            pruning=config.pcst_pruning,
+            edge_weight_alpha=config.pcst_edge_weight_alpha,
+            bridge_components=config.pcst_bridge_components,
+            bridge_max_hops=config.pcst_bridge_max_hops,
         )
         print(f"✓ PCST solver ready (cost: {config.pcst_cost}, budget: {config.pcst_budget}, "
-              f"local: {config.pcst_local_budget}, pruning: {config.pcst_pruning})")
+              f"local: {config.pcst_local_budget}, pruning: {config.pcst_pruning}, "
+              f"alpha: {config.pcst_edge_weight_alpha}, bridge: {config.pcst_bridge_components})")
 
         # 6. Create retriever instance
         retriever = cls(
