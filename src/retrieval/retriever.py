@@ -311,10 +311,12 @@ class Retriever:
             edge_weight_alpha=config.pcst_edge_weight_alpha,
             bridge_components=config.pcst_bridge_components,
             bridge_max_hops=config.pcst_bridge_max_hops,
+            existence_prize=config.pcst_existence_prize,
         )
         print(f"✓ PCST solver ready (cost: {config.pcst_cost}, budget: {config.pcst_budget}, "
               f"local: {config.pcst_local_budget}, pruning: {config.pcst_pruning}, "
-              f"alpha: {config.pcst_edge_weight_alpha}, bridge: {config.pcst_bridge_components})")
+              f"alpha: {config.pcst_edge_weight_alpha}, bridge: {config.pcst_bridge_components}, "
+              f"existence_prize: {config.pcst_existence_prize})")
 
         # 6. Create retriever instance
         retriever = cls(

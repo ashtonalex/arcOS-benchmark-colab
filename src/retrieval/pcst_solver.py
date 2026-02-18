@@ -427,6 +427,10 @@ class PCSTSolver:
         else:
             costs_array = np.full(len(edges), self.cost, dtype=np.float64)
 
+        # pcst_fast requires strictly positive edge costs — enforce a floor.
+        # cost=0 causes the GW algorithm to degenerate (returns only root).
+        costs_array = np.maximum(costs_array, 1e-9)
+
         # Prizes: from merged global + local prizes
         prize_array = np.zeros(num_nodes, dtype=np.float64)
         for node, score in prizes.items():
