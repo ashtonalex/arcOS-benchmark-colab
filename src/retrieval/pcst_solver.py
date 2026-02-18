@@ -455,7 +455,7 @@ class PCSTSolver:
         scored_nodes = int(np.count_nonzero(prize_array))
         if self.verbose:
             print(f"  PCST input: {num_nodes} nodes, {len(edges)} edges, "
-                  f"cost={self.cost:.2f}, pruning='{effective_pruning}', "
+                  f"cost={self.cost:.4g}, pruning='{effective_pruning}', "
                   f"{scored_nodes} scored nodes, "
                   f"root={root_node[:30]}...")
 
