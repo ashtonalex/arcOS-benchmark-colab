@@ -35,7 +35,7 @@ class PCSTSolver:
                  bridge_components: bool = True,
                  bridge_max_hops: int = 4,
                  local_prize_threshold: float = 0.12,
-                 existence_prize: float = 0.02,
+                 existence_prize: float = 0.0,
                  verbose: bool = True):
         """
         Initialize PCST solver.
