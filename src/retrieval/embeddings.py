@@ -10,12 +10,16 @@ from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 import torch
 
-# Freebase relation prefixes that are administrative/meta (no semantic value)
+# Freebase relation prefixes that are administrative/meta (no semantic value).
+# Kept in sync with graph_builder._JUNK_RELATION_PREFIXES — those filter
+# triples at graph construction; these filter during enrichment text
+# generation for any relations that survive into the graph.
 _SKIP_RELATION_PREFIXES = (
     'freebase.valuenotation',
-    'common.webpage',
+    'freebase.type_profile',
     'type.object',
     'kg.object_profile',
+    'rdf-schema#',
 )
 
 

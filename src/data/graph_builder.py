@@ -2,11 +2,51 @@
 NetworkX graph construction from RoG-WebQSP triples.
 
 Builds both unified graphs (all training examples) and per-example subgraphs.
+
+Filtering: RoG-WebQSP graphs contain large amounts of noise —
+administrative Freebase metadata, radio station playlists, statistical
+indicators, and opaque CVT (Compound Value Type) join nodes like
+``m.0rqp4h0``.  These are filtered at construction time so that only
+semantically meaningful triples enter the graph, which directly
+improves downstream embedding quality and PCST retrieval.
 """
 
 from collections import Counter
 from typing import List, Tuple, Optional
+import re
 import networkx as nx
+
+
+# ── Freebase CVT / MID detection ────────────────────────────────────────
+# Compound Value Type nodes are intermediate join nodes with opaque IDs.
+# They carry no semantic meaning as entity names and produce degenerate
+# embeddings (the model sees "m.0rqp4h0" as gibberish).
+# Pattern: "m." or "g." followed by alphanumeric/underscore chars.
+_CVT_PATTERN = re.compile(r'^[mg]\.[0-9a-z_]+$', re.IGNORECASE)
+
+# ── Administrative relation prefixes ────────────────────────────────────
+# Only truly non-factual relations — internal Freebase bookkeeping that
+# never represents a real-world relationship between entities.
+# Deliberately minimal: the CVT node filter catches most noise already,
+# and borderline relations (broadcast, statistical, common.topic.*)
+# are kept because they carry real semantics and preserve graph paths.
+_JUNK_RELATION_PREFIXES = (
+    'freebase.valuenotation',   # "a human reviewed this field" — not a fact
+    'freebase.type_profile',    # type system internals
+    'type.object',              # type system internals
+    'kg.object_profile',        # KG metadata
+    'rdf-schema#',              # schema definitions, not instance data
+)
+
+
+def _is_cvt_node(entity: str) -> bool:
+    """True if entity is an opaque Freebase CVT/MID node."""
+    return bool(_CVT_PATTERN.match(entity))
+
+
+def _is_junk_relation(relation: str) -> bool:
+    """True if relation is administrative/noise metadata."""
+    return any(relation.startswith(prefix) for prefix in _JUNK_RELATION_PREFIXES)
 
 
 class GraphBuilder:
@@ -14,20 +54,35 @@ class GraphBuilder:
     Builder for NetworkX graphs from triple lists.
 
     Each triple is [subject, relation, object] where:
-    - subject: Entity string (e.g., "m.0d05w3")
+    - subject: Entity string (e.g., "Justin Bieber" or CVT "m.0d05w3")
     - relation: Freebase relation (e.g., "people.person.sibling_s")
-    - object: Entity string (e.g., "m.02w_b5r")
+    - object: Entity string (e.g., "Jaxon Bieber" or CVT "m.02w_b5r")
+
+    Triples containing CVT nodes or junk relations are filtered out
+    at construction time to keep the graph semantically clean.
     """
 
-    def __init__(self, directed: bool = True):
+    def __init__(self, directed: bool = True, filter_noise: bool = True):
         """
         Initialize the graph builder.
 
         Args:
             directed: If True, create directed graphs (default), else undirected
+            filter_noise: If True (default), drop CVT nodes and junk relations
         """
         self.directed = directed
-        print(f"✓ GraphBuilder initialized (directed={directed})")
+        self.filter_noise = filter_noise
+        print(f"✓ GraphBuilder initialized (directed={directed}, filter_noise={filter_noise})")
+
+    def _skip_triple(self, subject: str, relation: str, obj: str) -> bool:
+        """Return True if this triple should be filtered out."""
+        if not self.filter_noise:
+            return False
+        if _is_cvt_node(subject) or _is_cvt_node(obj):
+            return True
+        if _is_junk_relation(relation):
+            return True
+        return False
 
     def build_from_triples(
         self,
@@ -46,12 +101,19 @@ class GraphBuilder:
         """
         G = nx.DiGraph() if self.directed else nx.Graph()
 
+        total = 0
+        skipped = 0
         for triple in triples:
             if len(triple) != 3:
                 print(f"Warning: Skipping invalid triple: {triple}")
                 continue
 
             subject, relation, obj = triple
+            total += 1
+
+            if self._skip_triple(subject, relation, obj):
+                skipped += 1
+                continue
 
             # Add nodes with entity names as attributes
             G.add_node(subject, entity_name=subject)
@@ -84,9 +146,13 @@ class GraphBuilder:
             NetworkX Graph or DiGraph containing all triples
         """
         print("Building unified graph from dataset...")
+        if self.filter_noise:
+            print("  Filtering: CVT nodes + junk relations enabled")
 
         G = nx.DiGraph() if self.directed else nx.Graph()
         total_triples = 0
+        skipped_cvt = 0
+        skipped_rel = 0
 
         num_examples = len(dataset) if max_examples is None else min(max_examples, len(dataset))
 
@@ -100,6 +166,15 @@ class GraphBuilder:
                     continue
 
                 subject, relation, obj = triple
+                total_triples += 1
+
+                if self.filter_noise:
+                    if _is_cvt_node(subject) or _is_cvt_node(obj):
+                        skipped_cvt += 1
+                        continue
+                    if _is_junk_relation(relation):
+                        skipped_rel += 1
+                        continue
 
                 # Add nodes
                 G.add_node(subject, entity_name=subject)
@@ -108,13 +183,16 @@ class GraphBuilder:
                 # Add edge (will merge if duplicate)
                 G.add_edge(subject, obj, relation=relation)
 
-                total_triples += 1
-
             if (i + 1) % 500 == 0:
                 print(f"  Processed {i + 1}/{num_examples} examples...")
 
+        kept = total_triples - skipped_cvt - skipped_rel
         print(f"✓ Unified graph built from {num_examples} examples")
-        print(f"  Total triples processed: {total_triples}")
+        print(f"  Total triples seen:    {total_triples}")
+        if self.filter_noise:
+            print(f"  Skipped (CVT nodes):   {skipped_cvt} ({skipped_cvt/total_triples:.1%})")
+            print(f"  Skipped (junk rels):   {skipped_rel} ({skipped_rel/total_triples:.1%})")
+            print(f"  Kept:                  {kept} ({kept/total_triples:.1%})")
         print(f"  Unique nodes: {G.number_of_nodes()}")
         print(f"  Unique edges: {G.number_of_edges()}")
 
