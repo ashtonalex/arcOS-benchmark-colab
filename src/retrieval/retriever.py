@@ -113,6 +113,15 @@ class Retriever:
                 seed_entities.append(entity)
                 similarity_scores[entity] = score
 
+        # 3b. Filter lexical noise from k-NN seeds
+        #   k-NN embedding search can return false positives like
+        #   "Audierne" for a query about "Audi". Remove seeds whose
+        #   names are suspiciously similar substrings of other seeds
+        #   but have low similarity scores.
+        if q_entity_names:
+            seed_entities = self._filter_noisy_seeds(
+                seed_entities, q_entity_names, similarity_scores)
+
         # 4. Prizes — raw cosine similarity scores (0 to 1)
         #
         #   Prizes and edge costs on the same scale gives PCST meaningful
@@ -175,6 +184,55 @@ class Retriever:
         )
 
         return result
+
+    @staticmethod
+    def _filter_noisy_seeds(
+        seed_entities: List[str],
+        q_entity_names: set,
+        similarity_scores: Dict[str, float],
+        min_score: float = 0.35,
+    ) -> List[str]:
+        """Remove k-NN seeds that are likely lexical false positives.
+
+        Heuristic: if a seed's name is a near-substring of a topic entity
+        (or vice versa) but they are NOT the same entity, it's probably
+        a lexical coincidence (e.g. "Audierne" for "Audi").  Drop it
+        unless its similarity score is high enough to override.
+
+        Also drops any seed below *min_score* that isn't a topic entity.
+        """
+        filtered = []
+        for entity in seed_entities:
+            # Always keep topic entities
+            if entity in q_entity_names:
+                filtered.append(entity)
+                continue
+
+            score = similarity_scores.get(entity, 0.0)
+
+            # Drop low-scoring seeds outright
+            if score < min_score:
+                continue
+
+            # Check for suspicious substring overlap with topic entities
+            e_lower = entity.lower()
+            is_noisy = False
+            for q_ent in q_entity_names:
+                q_lower = q_ent.lower()
+                # If one is a prefix/substring of the other but they differ
+                if (e_lower != q_lower
+                        and len(e_lower) > 3 and len(q_lower) > 3
+                        and (e_lower.startswith(q_lower)
+                             or q_lower.startswith(e_lower))):
+                    # Only keep if score is very high
+                    if score < 0.6:
+                        is_noisy = True
+                        break
+
+            if not is_noisy:
+                filtered.append(entity)
+
+        return filtered
 
     @classmethod
     def build_from_checkpoint_or_new(

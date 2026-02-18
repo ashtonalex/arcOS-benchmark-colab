@@ -34,7 +34,8 @@ class PCSTSolver:
                  edge_weight_alpha: float = 0.0,
                  bridge_components: bool = True,
                  bridge_max_hops: int = 4,
-                 local_prize_threshold: float = 0.3,
+                 local_prize_threshold: float = 0.12,
+                 existence_prize: float = 0.02,
                  verbose: bool = True):
         """
         Initialize PCST solver.
@@ -56,6 +57,12 @@ class PCSTSolver:
             local_prize_threshold: Min cosine similarity for local prize
                 assignment. Nodes in root's component with query similarity
                 above this threshold get prizes.
+            existence_prize: Small base prize for ALL nodes in root's
+                component. Prevents PCST from aggressively pruning relay
+                nodes that connect high-prize seeds. Should be << cost
+                so relay chains only survive when they connect valuable
+                endpoints. Default 0.02 means ~5 relay nodes can be
+                "free" if they bridge a 0.1-cost edge to a 0.4-prize node.
             verbose: Print debug info per retrieval. Set False for batch loops.
         """
         self.cost = cost
@@ -66,6 +73,7 @@ class PCSTSolver:
         self.bridge_components = bridge_components
         self.bridge_max_hops = bridge_max_hops
         self.local_prize_threshold = local_prize_threshold
+        self.existence_prize = existence_prize
         self.verbose = verbose
 
     def extract_subgraph(
@@ -114,11 +122,14 @@ class PCSTSolver:
         # Step 1: Localize — BFS from root entity to fill local_budget
         local_graph = self._localize(G, valid_seeds, root_entities=root_entities)
         if self.verbose:
+            print(f"  Root entities (input): {root_entities}")
             print(f"  Localized: {len(local_graph)} nodes, "
                   f"{local_graph.number_of_edges()} edges")
 
         # Step 2: Extract root's connected component for PCST
         root_node = self._pick_root(local_graph, valid_seeds, root_entities, prizes)
+        if self.verbose:
+            print(f"  Selected root: {root_node}")
         pcst_graph, n_components = self._root_component(local_graph, root_node)
 
         # Step 3: Compute local prizes — score nodes in root's component
@@ -130,12 +141,17 @@ class PCSTSolver:
 
         if self.verbose:
             global_in_comp = sum(1 for n in prizes if n in pcst_graph)
-            local_only = sum(1 for n in local_prizes
-                             if n not in prizes and local_prizes[n] > 0)
+            local_semantic = sum(1 for n in local_prizes
+                                 if n not in prizes
+                                 and local_prizes[n] > self.existence_prize)
+            existence_only = sum(1 for n in local_prizes
+                                 if local_prizes[n] == self.existence_prize
+                                 and n not in prizes)
             print(f"  Root component: {len(pcst_graph)} nodes "
                   f"({n_components} components in localized graph)")
             print(f"  Prizes: {global_in_comp} global (k-NN) + "
-                  f"{local_only} local (query-entity sim) in root component")
+                  f"{local_semantic} local (query-entity sim) + "
+                  f"{existence_only} existence in root component")
 
         # Step 4: PCST on root's component
         try:
@@ -353,6 +369,14 @@ class PCSTSolver:
                     cos_sim = float(np.dot(q_unit, emb / e_norm))
                     if cos_sim >= self.local_prize_threshold:
                         prizes[node] = cos_sim
+
+        # 3. Existence prize: give every unprized node in the component a
+        #    small base prize so PCST doesn't aggressively prune relay
+        #    nodes that connect high-value seeds.
+        if self.existence_prize > 0:
+            for node in comp_nodes:
+                if node not in prizes:
+                    prizes[node] = self.existence_prize
 
         return prizes
 
