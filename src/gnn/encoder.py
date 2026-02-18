@@ -69,6 +69,7 @@ class GATv2Encoder(nn.Module):
         edge_index: torch.Tensor,
         edge_attr: torch.Tensor,
         query_embedding: torch.Tensor,
+        batch: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass through GATv2 encoder.
@@ -77,7 +78,8 @@ class GATv2Encoder(nn.Module):
             x: Node features [num_nodes, 384]
             edge_index: Edge indices [2, num_edges]
             edge_attr: Edge features [num_edges, 384]
-            query_embedding: Query embedding [384]
+            query_embedding: Query embeddings [batch_size, 384]
+            batch: Batch assignment [num_nodes] mapping each node to its graph
 
         Returns:
             node_embeddings: [num_nodes, hidden_dim]
@@ -86,19 +88,22 @@ class GATv2Encoder(nn.Module):
         # Project input features
         h = self.input_proj(x)  # [num_nodes, hidden_dim]
 
-        # Query conditioning: broadcast and add to all nodes
-        query_proj = self.query_proj(query_embedding.view(-1))  # [hidden_dim]
-        h = h + query_proj.unsqueeze(0)  # Broadcasting
+        # Query conditioning: per-graph query projected to each node
+        query_proj = self.query_proj(query_embedding)  # [B, hidden_dim]
+        if batch is not None:
+            h = h + query_proj[batch]  # [num_nodes, hidden_dim]
+        else:
+            h = h + query_proj  # broadcast [1, hidden_dim]
 
         # Collect attention weights across layers
-        all_attention_weights = []
+        all_attention_data = []
 
         # Pass through GAT layers with residual connections
         for i, (gat, norm) in enumerate(zip(self.gat_layers, self.layer_norms)):
             h_in = h
 
-            # GAT layer returns (output, (edge_index, attention_weights))
-            h_out, (_, attn) = gat(
+            # GAT layer returns (output, (augmented_edge_index, attention_weights))
+            h_out, (attn_edge_index, attn) = gat(
                 h, edge_index, edge_attr=edge_attr, return_attention_weights=True
             )
 
@@ -115,23 +120,22 @@ class GATv2Encoder(nn.Module):
             if i < self.num_layers - 1:
                 h = F.relu(h)
 
-            # Collect attention weights
-            # attn is [num_edges, num_heads], average to [num_edges]
-            attn_avg = attn.mean(dim=1)  # [num_edges]
-            all_attention_weights.append(attn_avg)
+            # Collect attention weights with augmented edge index (includes self-loops)
+            # attn is [num_augmented_edges, num_heads], average across heads
+            attn_avg = attn.mean(dim=1)
+            all_attention_data.append((attn_edge_index, attn_avg))
 
         # Aggregate attention weights to node level
         # For each node, average the attention of all incoming edges across layers
         node_attention = self._aggregate_attention_to_nodes(
-            edge_index, all_attention_weights, x.size(0)
+            all_attention_data, x.size(0)
         )
 
         return h, node_attention
 
     def _aggregate_attention_to_nodes(
         self,
-        edge_index: torch.Tensor,
-        attention_weights_list: list,
+        attention_data: list,
         num_nodes: int,
     ) -> torch.Tensor:
         """
@@ -141,32 +145,25 @@ class GATv2Encoder(nn.Module):
         averaged across all layers.
 
         Args:
-            edge_index: [2, num_edges]
-            attention_weights_list: List of [num_edges] tensors (one per layer)
+            attention_data: List of (augmented_edge_index, attn_avg) tuples per layer
             num_nodes: Number of nodes
 
         Returns:
             node_attention: [num_nodes]
         """
-        device = edge_index.device
+        if len(attention_data) == 0:
+            return torch.ones(num_nodes) / num_nodes
 
-        # Average attention across layers
-        if len(attention_weights_list) == 0:
-            return torch.ones(num_nodes, device=device) / num_nodes
+        device = attention_data[0][0].device
 
-        avg_attention = torch.stack(attention_weights_list, dim=0).mean(
-            dim=0
-        )  # [num_edges]
-
-        # Aggregate to target nodes (edge_index[1] are destination nodes)
+        # Accumulate per-node attention across all layers
         node_attention = torch.zeros(num_nodes, device=device)
         node_counts = torch.zeros(num_nodes, device=device)
 
-        target_nodes = edge_index[1]  # [num_edges]
-
-        # Scatter add attention to target nodes
-        node_attention.scatter_add_(0, target_nodes, avg_attention)
-        node_counts.scatter_add_(0, target_nodes, torch.ones_like(avg_attention))
+        for attn_edge_index, attn_avg in attention_data:
+            target_nodes = attn_edge_index[1]  # destination nodes
+            node_attention.scatter_add_(0, target_nodes, attn_avg)
+            node_counts.scatter_add_(0, target_nodes, torch.ones_like(attn_avg))
 
         # Average by count (avoid division by zero)
         node_counts = torch.clamp(node_counts, min=1.0)
@@ -229,6 +226,7 @@ class GraphSAGEEncoder(nn.Module):
         edge_index: torch.Tensor,
         edge_attr: torch.Tensor,
         query_embedding: torch.Tensor,
+        batch: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass through GraphSAGE encoder.
@@ -237,7 +235,8 @@ class GraphSAGEEncoder(nn.Module):
             x: Node features [num_nodes, 384]
             edge_index: Edge indices [2, num_edges]
             edge_attr: Edge features (not used by SAGE)
-            query_embedding: Query embedding [384]
+            query_embedding: Query embeddings [batch_size, 384]
+            batch: Batch assignment [num_nodes] mapping each node to its graph
 
         Returns:
             node_embeddings: [num_nodes, hidden_dim]
@@ -246,9 +245,12 @@ class GraphSAGEEncoder(nn.Module):
         # Project input features
         h = self.input_proj(x)
 
-        # Query conditioning
-        query_proj = self.query_proj(query_embedding.view(-1))
-        h = h + query_proj.unsqueeze(0)
+        # Query conditioning: per-graph query projected to each node
+        query_proj = self.query_proj(query_embedding)  # [B, hidden_dim]
+        if batch is not None:
+            h = h + query_proj[batch]
+        else:
+            h = h + query_proj  # broadcast [1, hidden_dim]
 
         # Pass through SAGE layers with residual connections
         for i, (sage, norm) in enumerate(zip(self.sage_layers, self.layer_norms)):

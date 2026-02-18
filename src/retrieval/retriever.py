@@ -3,11 +3,12 @@ Retriever orchestration layer.
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import time
 import networkx as nx
 import numpy as np
 from pathlib import Path
+from collections import deque
 
 from ..config import BenchmarkConfig
 from ..utils.checkpoints import save_checkpoint, load_checkpoint, checkpoint_exists
@@ -27,6 +28,7 @@ class RetrievedSubgraph:
     num_edges: int
     retrieval_time_ms: float
     pcst_used: bool
+    has_answer: Optional[bool] = None
 
 
 class Retriever:
@@ -64,7 +66,10 @@ class Retriever:
         self.relation_embeddings = relation_embeddings
 
     def retrieve(
-        self, question: str, q_entity: Optional[List[str]] = None
+        self,
+        question: str,
+        q_entity: Optional[List[str]] = None,
+        answer_entities: Optional[List[str]] = None,
     ) -> RetrievedSubgraph:
         """
         Main retrieval method: question -> subgraph.
@@ -74,6 +79,10 @@ class Retriever:
             q_entity: Optional list of known topic entity names from the
                 dataset.  When provided these are used as primary seeds,
                 bypassing the k-NN search for seed selection.
+            answer_entities: Optional list of expected answer entities.
+                When provided, ``RetrievedSubgraph.has_answer`` is set to
+                True if any answer entity appears as a node in the returned
+                subgraph.
 
         Returns:
             RetrievedSubgraph with extracted subgraph and metadata
@@ -136,7 +145,7 @@ class Retriever:
             subgraph = self.pcst_solver._bfs_fallback(
                 self.unified_graph,
                 seed_entities,
-                self.config.pcst_budget
+                root_entities=list(q_entity_names) if q_entity_names else None
             )
             pcst_used = False
 
@@ -145,6 +154,11 @@ class Retriever:
         retrieval_time_ms = (end_time - start_time) * 1000
 
         # 7. Build result
+        has_answer: Optional[bool] = None
+        if answer_entities is not None:
+            subgraph_nodes = set(subgraph.nodes())
+            has_answer = any(ent in subgraph_nodes for ent in answer_entities)
+
         result = RetrievedSubgraph(
             subgraph=subgraph,
             question=question,
@@ -153,7 +167,8 @@ class Retriever:
             num_nodes=len(subgraph),
             num_edges=subgraph.number_of_edges(),
             retrieval_time_ms=retrieval_time_ms,
-            pcst_used=pcst_used
+            pcst_used=pcst_used,
+            has_answer=has_answer,
         )
 
         return result
@@ -252,3 +267,281 @@ class Retriever:
         print("=" * 60)
 
         return retriever
+
+    # ------------------------------------------------------------------
+    # Hit-rate diagnostics
+    # ------------------------------------------------------------------
+
+    def check_entity_coverage(
+        self, dataset, limit: Optional[int] = None
+    ) -> Dict[str, object]:
+        """
+        Check how many answer entities from *dataset* exist in the unified graph.
+
+        Separates "graph doesn't contain the answer" (coverage gap) from
+        "retrieval didn't find the answer" (retrieval gap).
+
+        Args:
+            dataset: HuggingFace Dataset with ``a_entity`` field.
+            limit: Max examples to check (None = all).
+
+        Returns:
+            Dict with keys:
+                total: number of examples checked
+                reachable: examples whose a_entity has >= 1 node in unified graph
+                unreachable: examples with no a_entity node in unified graph
+                reachable_rate: reachable / total (0-1)
+                missing_entities: set of a_entity values absent from the graph
+        """
+        graph_nodes = set(self.unified_graph.nodes())
+        total = 0
+        reachable = 0
+        missing_entities: set = set()
+
+        n = len(dataset) if limit is None else min(limit, len(dataset))
+        for i in range(n):
+            example = dataset[i]
+            answer_entities = example.get("a_entity", [])
+            if isinstance(answer_entities, str):
+                answer_entities = [answer_entities]
+
+            total += 1
+            if any(ent in graph_nodes for ent in answer_entities):
+                reachable += 1
+            else:
+                missing_entities.update(answer_entities)
+
+        rate = reachable / total if total > 0 else 0.0
+        return {
+            "total": total,
+            "reachable": reachable,
+            "unreachable": total - reachable,
+            "reachable_rate": rate,
+            "missing_entities": missing_entities,
+        }
+
+    @staticmethod
+    def node_hit(
+        subgraph: nx.DiGraph,
+        answer_entities: List[str],
+    ) -> bool:
+        """True if any answer entity is a node in *subgraph*."""
+        nodes = set(subgraph.nodes())
+        return any(ent in nodes for ent in answer_entities)
+
+    @staticmethod
+    def evidence_hit(
+        subgraph: nx.DiGraph,
+        q_entities: List[str],
+        answer_entities: List[str],
+        max_hops: int = 2,
+    ) -> bool:
+        """
+        True if the subgraph contains a path of <= *max_hops* edges from
+        any q_entity to any a_entity (in either direction).
+
+        This is stricter than ``node_hit`` — the answer node must be
+        *reachable from the question entity* within the subgraph, meaning
+        the connecting evidence triples are present and verbalisable.
+        """
+        nodes = set(subgraph.nodes())
+        q_in = [q for q in q_entities if q in nodes]
+        a_set = set(a for a in answer_entities if a in nodes)
+
+        if not q_in or not a_set:
+            return False
+
+        # BFS from each q_entity on the undirected view (relations are
+        # evidence regardless of edge direction).
+        undirected = subgraph.to_undirected(as_view=True)
+        for start in q_in:
+            visited = {start}
+            frontier = deque([(start, 0)])
+            while frontier:
+                node, depth = frontier.popleft()
+                if node in a_set:
+                    return True
+                if depth >= max_hops:
+                    continue
+                for nbr in undirected.neighbors(node):
+                    if nbr not in visited:
+                        visited.add(nbr)
+                        frontier.append((nbr, depth + 1))
+        return False
+
+    def evaluate_hit_rates(
+        self,
+        dataset,
+        limit: Optional[int] = None,
+        max_hops: int = 2,
+        verbose: bool = True,
+    ) -> Dict[str, object]:
+        """
+        Run retrieval on *dataset* and report coverage-aware hit rates.
+
+        Returns a dict with:
+            total, reachable, reachable_rate  — coverage stats
+            node_hits, node_hit_rate_raw      — classic metric (all examples)
+            node_hit_rate_cond                — hits / reachable (retrieval quality)
+            evidence_hits, evidence_hit_rate_raw, evidence_hit_rate_cond
+            per_example — list of per-example dicts for detailed inspection
+        """
+        graph_nodes = set(self.unified_graph.nodes())
+        n = len(dataset) if limit is None else min(limit, len(dataset))
+
+        reachable = 0
+        node_hits = 0
+        evidence_hits = 0
+        per_example: List[Dict] = []
+
+        for i in range(n):
+            example = dataset[i]
+            question = example["question"]
+            answer_entities = example.get("a_entity", [])
+            if isinstance(answer_entities, str):
+                answer_entities = [answer_entities]
+            q_entities = example.get("q_entity", [])
+            if isinstance(q_entities, str):
+                q_entities = [q_entities]
+
+            is_reachable = any(ent in graph_nodes for ent in answer_entities)
+            if is_reachable:
+                reachable += 1
+
+            result = self.retrieve(question, q_entity=q_entities)
+
+            n_hit = self.node_hit(result.subgraph, answer_entities)
+            e_hit = self.evidence_hit(
+                result.subgraph, q_entities, answer_entities, max_hops=max_hops
+            )
+
+            if n_hit:
+                node_hits += 1
+            if e_hit:
+                evidence_hits += 1
+
+            per_example.append({
+                "question": question,
+                "q_entity": q_entities,
+                "a_entity": answer_entities,
+                "reachable": is_reachable,
+                "node_hit": n_hit,
+                "evidence_hit": e_hit,
+                "num_nodes": result.num_nodes,
+                "retrieval_time_ms": result.retrieval_time_ms,
+            })
+
+        node_raw = node_hits / n if n > 0 else 0.0
+        node_cond = node_hits / reachable if reachable > 0 else 0.0
+        ev_raw = evidence_hits / n if n > 0 else 0.0
+        ev_cond = evidence_hits / reachable if reachable > 0 else 0.0
+
+        summary = {
+            "total": n,
+            "reachable": reachable,
+            "reachable_rate": reachable / n if n > 0 else 0.0,
+            "node_hits": node_hits,
+            "node_hit_rate_raw": node_raw,
+            "node_hit_rate_cond": node_cond,
+            "evidence_hits": evidence_hits,
+            "evidence_hit_rate_raw": ev_raw,
+            "evidence_hit_rate_cond": ev_cond,
+            "per_example": per_example,
+        }
+
+        if verbose:
+            print("=" * 60)
+            print("HIT RATE EVALUATION")
+            print("=" * 60)
+            print(f"Examples evaluated:  {n}")
+            print(f"Answer in graph:     {reachable}/{n} "
+                  f"({summary['reachable_rate']:.1%})")
+            print()
+            print(f"--- Node-level hit (a_entity is a subgraph node) ---")
+            print(f"  Raw hit rate:      {node_hits}/{n} ({node_raw:.1%})")
+            print(f"  Conditioned:       {node_hits}/{reachable} ({node_cond:.1%})")
+            print()
+            print(f"--- Evidence hit (q_entity -> a_entity within "
+                  f"{max_hops} hops) ---")
+            print(f"  Raw hit rate:      {evidence_hits}/{n} ({ev_raw:.1%})")
+            print(f"  Conditioned:       {evidence_hits}/{reachable} "
+                  f"({ev_cond:.1%})")
+            print("=" * 60)
+
+        return summary
+
+    def evaluate_batch(
+        self,
+        examples: List[Dict],
+        verbose: bool = True,
+    ) -> Dict[str, object]:
+        """
+        Retrieve subgraphs for a list of example dicts and return aggregate
+        hit statistics.
+
+        Each element of *examples* must have:
+            ``question`` (str), ``q_entity`` (str | List[str]),
+            ``a_entity``  (str | List[str]).
+
+        This is a lightweight alternative to ``evaluate_hit_rates`` that
+        accepts a plain list of dicts instead of a HuggingFace Dataset
+        object, and stores ``has_answer`` on every ``RetrievedSubgraph``
+        via the new ``answer_entities`` argument to ``retrieve()``.
+
+        Returns:
+            Dict with keys:
+                total, hits, hit_rate,
+                avg_time_ms, avg_nodes,
+                results  — list of RetrievedSubgraph objects
+        """
+        hits = 0
+        total_time_ms = 0.0
+        total_nodes = 0
+        results: List[RetrievedSubgraph] = []
+
+        for example in examples:
+            question = example["question"]
+            answer_entities = example.get("a_entity", [])
+            if isinstance(answer_entities, str):
+                answer_entities = [answer_entities]
+            q_entities = example.get("q_entity", [])
+            if isinstance(q_entities, str):
+                q_entities = [q_entities]
+
+            result = self.retrieve(
+                question,
+                q_entity=q_entities,
+                answer_entities=answer_entities,
+            )
+            results.append(result)
+
+            if result.has_answer:
+                hits += 1
+            total_time_ms += result.retrieval_time_ms
+            total_nodes += result.num_nodes
+
+        n = len(examples)
+        hit_rate = hits / n if n > 0 else 0.0
+        avg_time = total_time_ms / n if n > 0 else 0.0
+        avg_nodes = total_nodes / n if n > 0 else 0.0
+
+        summary = {
+            "total": n,
+            "hits": hits,
+            "hit_rate": hit_rate,
+            "avg_time_ms": avg_time,
+            "avg_nodes": avg_nodes,
+            "results": results,
+        }
+
+        if verbose:
+            print("=" * 60)
+            print("BATCH EVALUATION")
+            print("=" * 60)
+            print(f"Examples:       {n}")
+            print(f"Hit rate:       {hits}/{n} ({hit_rate:.1%})")
+            print(f"Avg time:       {avg_time:.1f} ms")
+            print(f"Avg nodes:      {avg_nodes:.1f}")
+            print("=" * 60)
+
+        return summary

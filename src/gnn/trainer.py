@@ -2,9 +2,8 @@
 GNN training loop with focal loss and early stopping.
 """
 
-import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,7 +14,6 @@ from tqdm.auto import tqdm
 import numpy as np
 
 from ..config import BenchmarkConfig
-from ..utils.checkpoints import save_checkpoint
 from .encoder import GATv2Encoder, GraphSAGEEncoder
 from .pooling import AttentionPooling, MeanPooling, MaxPooling
 
@@ -174,7 +172,8 @@ class GNNTrainer:
 
             # Forward pass through encoder
             node_embeddings, attention_weights = self.encoder(
-                batch.x, batch.edge_index, batch.edge_attr, batch.query_embedding[0]
+                batch.x, batch.edge_index, batch.edge_attr,
+                batch.query_embedding, batch.batch,
             )
 
             # Pool to graph embedding
@@ -241,7 +240,8 @@ class GNNTrainer:
                     batch.x,
                     batch.edge_index,
                     batch.edge_attr,
-                    batch.query_embedding[0],
+                    batch.query_embedding,
+                    batch.batch,
                 )
 
                 graph_embedding, _ = self.pooling(node_embeddings, batch.batch)
@@ -392,7 +392,7 @@ class GNNTrainer:
                 "gnn_dropout": self.config.gnn_dropout,
             },
         }
-        save_checkpoint(checkpoint, path, format="pickle")
+        torch.save(checkpoint, path)
 
     def load_checkpoint(self, path: Path):
         """

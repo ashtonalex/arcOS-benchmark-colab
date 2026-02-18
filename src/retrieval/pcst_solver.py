@@ -91,7 +91,8 @@ class PCSTSolver:
                                           root_entities=root_entities)
         except Exception as e:
             print(f"  PCST failed ({e}), falling back to BFS")
-            subgraph = self._bfs_fallback(G, valid_seeds)
+            subgraph = self._bfs_fallback(G, valid_seeds,
+                                          root_entities=root_entities)
 
         # Step 3: Validate minimum size — retry with relaxed pruning
         if len(subgraph) < min(len(valid_seeds), 3):
@@ -107,7 +108,8 @@ class PCSTSolver:
         # Step 3b: BFS fallback if still too small
         if len(subgraph) < min(len(valid_seeds), 3):
             print(f"  Still too small ({len(subgraph)} nodes), BFS fallback")
-            subgraph = self._bfs_fallback(G, valid_seeds)
+            subgraph = self._bfs_fallback(G, valid_seeds,
+                                          root_entities=root_entities)
 
         # Step 4: Enforce budget
         if len(subgraph) > self.budget:
@@ -223,22 +225,36 @@ class PCSTSolver:
         result_nodes = np.asarray(result_nodes, dtype=np.int64)
 
         # Detect labels-vs-indices return format:
-        # Indices are unique node IDs (no duplicates possible).
-        # Labels are cluster membership IDs (many duplicates like 0,0,0,1,0).
-        # Previous heuristic (len == num_nodes) failed on disconnected graphs
-        # where labels covered only one component.
-        n_unique = len(np.unique(result_nodes))
-
-        if n_unique < len(result_nodes):
-            # Labels format: duplicates present, extract root's cluster
-            root_label = result_nodes[root] if root < len(result_nodes) else 0
-            selected = np.where(result_nodes == root_label)[0]
+        # - Labels format: one entry per node (len == num_nodes), values are
+        #   cluster IDs (-1 = unselected, 0+ = cluster membership).
+        # - Indices format: subset of selected node indices (len < num_nodes),
+        #   values are node IDs in [0, num_nodes).
+        # With root >= 0 and num_clusters=1, pcst_fast should return indices,
+        # but some versions return labels regardless.
+        if len(result_nodes) == num_nodes:
+            # Labels format: extract root's cluster
+            root_label = int(result_nodes[root])
+            if root_label < 0:
+                # Root marked unselected — find the largest non-negative cluster
+                positive = result_nodes[result_nodes >= 0]
+                if len(positive) > 0:
+                    root_label = int(np.bincount(positive.astype(np.intp)).argmax())
+                    selected = np.where(result_nodes == root_label)[0]
+                else:
+                    selected = np.array([root], dtype=np.int64)
+            else:
+                selected = np.where(result_nodes == root_label)[0]
             print(f"  PCST returned labels format, "
                   f"extracted {len(selected)} nodes in root cluster")
         else:
-            # Indices format: all unique values, use directly
-            selected = result_nodes
+            # Indices format: deduplicate and clamp to valid range
+            selected = np.unique(result_nodes)
+            selected = selected[(selected >= 0) & (selected < num_nodes)]
             print(f"  PCST output: {len(selected)} nodes (indices format)")
+
+        # Always include root node in result
+        if root not in selected:
+            selected = np.append(selected, root)
 
         # Map indices back to node names
         selected_names = [nodes[i] for i in selected
@@ -250,15 +266,25 @@ class PCSTSolver:
         subgraph = G.subgraph(selected_names).copy()
         return subgraph
 
-    def _bfs_fallback(self, G: nx.DiGraph, seed_nodes: List[str]) -> nx.DiGraph:
-        """BFS expansion from highest-degree seed as PCST fallback."""
+    def _bfs_fallback(self, G: nx.DiGraph, seed_nodes: List[str],
+                      root_entities: List[str] = None) -> nx.DiGraph:
+        """BFS expansion from topic entity (or highest-degree seed) as PCST fallback."""
         G_undirected = self._get_undirected(G)
 
-        best_seed = max(
-            [s for s in seed_nodes if s in G_undirected],
-            key=lambda s: G_undirected.degree(s),
-            default=None
-        )
+        # Prefer topic entity as BFS root, fall back to highest-degree seed
+        best_seed = None
+        if root_entities:
+            for entity in root_entities:
+                if entity in G_undirected:
+                    best_seed = entity
+                    break
+
+        if best_seed is None:
+            best_seed = max(
+                [s for s in seed_nodes if s in G_undirected],
+                key=lambda s: G_undirected.degree(s),
+                default=None
+            )
         if best_seed is None:
             return nx.DiGraph()
 

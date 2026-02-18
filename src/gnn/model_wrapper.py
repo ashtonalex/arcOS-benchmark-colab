@@ -179,6 +179,7 @@ class GNNModel:
         from tqdm.auto import tqdm
 
         pyg_data_list = []
+        skipped_no_answer = 0
 
         for example in tqdm(dataset, desc="Converting to PyG"):
             question = example["question"]
@@ -200,11 +201,24 @@ class GNNModel:
                     answer_entities=answer_entities,
                 )
 
+                # Skip examples where no answer node landed in the subgraph.
+                # All-zero labels teach the GNN that no node matters, which
+                # actively suppresses recall and poisons attention scores.
+                if data.y is not None and data.y.sum().item() == 0:
+                    skipped_no_answer += 1
+                    continue
+
                 pyg_data_list.append(data)
 
             except Exception as e:
                 print(f"Warning: Failed to process example '{question}': {e}")
                 continue
+
+        if skipped_no_answer > 0:
+            total = skipped_no_answer + len(pyg_data_list)
+            print(f"  Skipped {skipped_no_answer}/{total} examples "
+                  f"with no answer node in subgraph "
+                  f"({skipped_no_answer/total:.1%} miss rate)")
 
         return pyg_data_list
 
@@ -229,9 +243,9 @@ class GNNModel:
 
         # Forward pass
         with torch.no_grad():
-            # Encoder
+            # Encoder (single graph: query_embedding is [1, 384], broadcasts via batch=None)
             node_embeddings, attention_weights = self.trainer.encoder(
-                data.x, data.edge_index, data.edge_attr, data.query_embedding[0]
+                data.x, data.edge_index, data.edge_attr, data.query_embedding
             )
 
             # Pooling
@@ -260,7 +274,7 @@ class GNNModel:
         self, retrieved_subgraphs: List[RetrievedSubgraph], questions: List[str]
     ) -> List[GNNOutput]:
         """
-        Encode multiple subgraphs in batch.
+        Encode multiple subgraphs in a single batched forward pass.
 
         Args:
             retrieved_subgraphs: List of RetrievedSubgraph objects
@@ -269,10 +283,46 @@ class GNNModel:
         Returns:
             List of GNNOutput objects
         """
-        outputs = []
+        from torch_geometric.data import Batch
+
+        # Convert all subgraphs to PyG Data
+        data_list = []
         for subgraph, question in zip(retrieved_subgraphs, questions):
-            output = self.encode(subgraph, question)
-            outputs.append(output)
+            data = self.converter.convert(
+                subgraph.subgraph, question, answer_entities=None
+            )
+            data_list.append(data)
+
+        # Batch and forward pass
+        batched = Batch.from_data_list(data_list).to(self.device)
+
+        with torch.no_grad():
+            node_embeddings, attention_weights = self.trainer.encoder(
+                batched.x, batched.edge_index, batched.edge_attr,
+                batched.query_embedding, batched.batch,
+            )
+            graph_embedding, _ = self.trainer.pooling(
+                node_embeddings, batched.batch
+            )
+
+        # Split results back per graph
+        outputs = []
+        for i, data in enumerate(data_list):
+            mask = (batched.batch == i)
+            node_emb_i = node_embeddings[mask].cpu()
+            attn_i = attention_weights[mask]
+            graph_emb_i = graph_embedding[i].cpu()
+
+            attention_scores = {}
+            for j, name in enumerate(data.node_names):
+                attention_scores[name] = float(attn_i[j].item())
+
+            outputs.append(GNNOutput(
+                node_embeddings=node_emb_i,
+                attention_scores=attention_scores,
+                graph_embedding=graph_emb_i,
+            ))
+
         return outputs
 
     def get_top_attention_nodes(

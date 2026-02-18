@@ -6,7 +6,7 @@ from typing import Tuple
 import torch
 import torch.nn as nn
 from torch_geometric.nn import GlobalAttention, global_mean_pool, global_max_pool
-from torch_geometric.data import Batch
+from torch_geometric.utils import softmax as pyg_softmax
 
 from ..config import BenchmarkConfig
 
@@ -79,22 +79,7 @@ class AttentionPooling(nn.Module):
         Returns:
             normalized_scores: [num_nodes_total]
         """
-        # Compute softmax within each graph
-        max_scores = torch.zeros_like(scores)
-        for graph_id in batch.unique():
-            mask = batch == graph_id
-            max_scores[mask] = scores[mask].max()
-
-        exp_scores = torch.exp(scores - max_scores)
-
-        # Sum per graph
-        sum_exp = torch.zeros(batch.max().item() + 1, device=scores.device)
-        sum_exp.scatter_add_(0, batch, exp_scores)
-
-        # Normalize
-        normalized = exp_scores / sum_exp[batch]
-
-        return normalized
+        return pyg_softmax(scores, batch)
 
 
 class MeanPooling(nn.Module):
@@ -124,16 +109,12 @@ class MeanPooling(nn.Module):
         """
         graph_embedding = global_mean_pool(x, batch)
 
-        # Uniform attention (all nodes equally important)
+        # Uniform attention (all nodes equally important), normalized per graph
         num_nodes = x.size(0)
         num_graphs = batch.max().item() + 1
-        attention_scores = torch.ones(num_nodes, device=x.device)
-
-        # Normalize per graph
-        for graph_id in range(num_graphs):
-            mask = batch == graph_id
-            count = mask.sum().item()
-            attention_scores[mask] = 1.0 / count
+        counts = torch.zeros(num_graphs, device=x.device)
+        counts.scatter_add_(0, batch, torch.ones(num_nodes, device=x.device))
+        attention_scores = 1.0 / counts[batch]
 
         return graph_embedding, attention_scores
 
@@ -165,7 +146,7 @@ class MaxPooling(nn.Module):
         """
         graph_embedding = global_max_pool(x, batch)
 
-        # Binary attention: 1 for nodes that contributed to max
+        # Binary attention: 1 for nodes that match graph max in any dimension
         num_nodes = x.size(0)
         num_graphs = batch.max().item() + 1
         attention_scores = torch.zeros(num_nodes, device=x.device)
@@ -174,17 +155,13 @@ class MaxPooling(nn.Module):
             mask = batch == graph_id
             graph_nodes = x[mask]
             max_vals = graph_nodes.max(dim=0)[0]  # [hidden_dim]
+            matches = (graph_nodes == max_vals.unsqueeze(0)).any(dim=1).float()
+            attention_scores[mask] = matches
 
-            # Mark nodes that match max in any dimension
-            for i, node_emb in enumerate(graph_nodes):
-                if torch.any(node_emb == max_vals):
-                    attention_scores[mask.nonzero()[i]] = 1.0
-
-        # Normalize
-        for graph_id in range(num_graphs):
-            mask = batch == graph_id
-            total = attention_scores[mask].sum()
-            if total > 0:
-                attention_scores[mask] /= total
+        # Normalize per graph
+        sum_per_graph = torch.zeros(num_graphs, device=x.device)
+        sum_per_graph.scatter_add_(0, batch, attention_scores)
+        safe_sum = torch.clamp(sum_per_graph, min=1.0)
+        attention_scores = attention_scores / safe_sum[batch]
 
         return graph_embedding, attention_scores
