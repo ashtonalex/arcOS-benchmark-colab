@@ -13,6 +13,7 @@ connect high-prize nodes cheaply enough to justify the edge cost.
 """
 
 from typing import List, Dict
+from itertools import chain
 import networkx as nx
 import numpy as np
 from collections import deque
@@ -22,7 +23,8 @@ class PCSTSolver:
     """Extract connected subgraphs using Prize-Collecting Steiner Tree."""
 
     def __init__(self, cost: float = 0.3, budget: int = 70,
-                 local_budget: int = 300, pruning: str = "gw"):
+                 local_budget: int = 300, pruning: str = "gw",
+                 verbose: bool = True):
         """
         Initialize PCST solver.
 
@@ -33,20 +35,13 @@ class PCSTSolver:
             budget: Maximum nodes in extracted subgraph.
             local_budget: Max nodes for BFS localization before PCST.
             pruning: PCST pruning strategy ('none', 'gw', or 'strong').
+            verbose: Print debug info per retrieval. Set False for batch loops.
         """
         self.cost = cost
         self.budget = budget
         self.local_budget = local_budget
         self.pruning = pruning
-        self._cached_graph_id = None
-        self._cached_undirected: nx.Graph = None
-
-    def _get_undirected(self, G: nx.DiGraph) -> nx.Graph:
-        """Return cached undirected conversion of G, recomputing only if G changed."""
-        if self._cached_graph_id != id(G):
-            self._cached_undirected = G.to_undirected()
-            self._cached_graph_id = id(G)
-        return self._cached_undirected
+        self.verbose = verbose
 
     def extract_subgraph(
         self,
@@ -82,22 +77,25 @@ class PCSTSolver:
 
         # Step 1: Localize — reduce graph to small neighborhood
         local_graph = self._localize(G, valid_seeds)
-        print(f"  Localized: {len(local_graph)} nodes, "
-              f"{local_graph.number_of_edges()} edges")
+        if self.verbose:
+            print(f"  Localized: {len(local_graph)} nodes, "
+                  f"{local_graph.number_of_edges()} edges")
 
         # Step 2: PCST on local graph
         try:
             subgraph = self._pcst_extract(local_graph, valid_seeds, prizes,
                                           root_entities=root_entities)
         except Exception as e:
-            print(f"  PCST failed ({e}), falling back to BFS")
+            if self.verbose:
+                print(f"  PCST failed ({e}), falling back to BFS")
             subgraph = self._bfs_fallback(G, valid_seeds,
                                           root_entities=root_entities)
 
         # Step 3: Validate minimum size — retry with relaxed pruning
         if len(subgraph) < min(len(valid_seeds), 3):
-            print(f"  PCST too small ({len(subgraph)} nodes), "
-                  f"retrying with pruning='none'")
+            if self.verbose:
+                print(f"  PCST too small ({len(subgraph)} nodes), "
+                      f"retrying with pruning='none'")
             try:
                 subgraph = self._pcst_extract(
                     local_graph, valid_seeds, prizes, pruning_override="none",
@@ -107,7 +105,8 @@ class PCSTSolver:
 
         # Step 3b: BFS fallback if still too small
         if len(subgraph) < min(len(valid_seeds), 3):
-            print(f"  Still too small ({len(subgraph)} nodes), BFS fallback")
+            if self.verbose:
+                print(f"  Still too small ({len(subgraph)} nodes), BFS fallback")
             subgraph = self._bfs_fallback(G, valid_seeds,
                                           root_entities=root_entities)
 
@@ -115,36 +114,41 @@ class PCSTSolver:
         if len(subgraph) > self.budget:
             pre = len(subgraph)
             subgraph = self._trim_to_budget(subgraph, prizes)
-            print(f"  Trimmed: {pre} -> {len(subgraph)} nodes")
+            if self.verbose:
+                print(f"  Trimmed: {pre} -> {len(subgraph)} nodes")
 
         # Step 5: Ensure weak connectivity
         if len(subgraph) > 1 and not nx.is_weakly_connected(subgraph):
             pre = len(subgraph)
             subgraph = self._largest_component(subgraph)
-            print(f"  Largest component: {pre} -> {len(subgraph)} nodes")
+            if self.verbose:
+                print(f"  Largest component: {pre} -> {len(subgraph)} nodes")
 
         connected = (nx.is_weakly_connected(subgraph)
                      if len(subgraph) > 0 else "N/A")
-        print(f"  Final: {len(subgraph)} nodes, "
-              f"{subgraph.number_of_edges()} edges, connected={connected}")
+        if self.verbose:
+            print(f"  Final: {len(subgraph)} nodes, "
+                  f"{subgraph.number_of_edges()} edges, connected={connected}")
 
         return subgraph
 
     def _localize(self, G: nx.DiGraph, seed_nodes: List[str]) -> nx.DiGraph:
-        """Multi-source BFS to extract local neighborhood around seeds."""
-        G_undirected = self._get_undirected(G)
+        """Multi-source BFS to extract local neighborhood around seeds.
 
+        Traverses both edge directions to treat the graph as undirected,
+        without creating an expensive undirected copy of the full graph.
+        """
         visited = set()
         queue = deque()
 
         for seed in seed_nodes:
-            if seed in G_undirected:
+            if seed in G:
                 visited.add(seed)
                 queue.append(seed)
 
         while queue and len(visited) < self.local_budget:
             node = queue.popleft()
-            for neighbor in G_undirected.neighbors(node):
+            for neighbor in chain(G.successors(node), G.predecessors(node)):
                 if neighbor not in visited:
                     visited.add(neighbor)
                     queue.append(neighbor)
@@ -212,10 +216,11 @@ class PCSTSolver:
 
         effective_pruning = pruning_override or self.pruning
         scored_nodes = int(np.count_nonzero(prize_array))
-        print(f"  PCST input: {num_nodes} nodes, {len(edges)} edges, "
-              f"cost={self.cost:.2f}, pruning='{effective_pruning}', "
-              f"{scored_nodes} scored nodes, "
-              f"root={root_node[:30]}...")
+        if self.verbose:
+            print(f"  PCST input: {num_nodes} nodes, {len(edges)} edges, "
+                  f"cost={self.cost:.2f}, pruning='{effective_pruning}', "
+                  f"{scored_nodes} scored nodes, "
+                  f"root={root_node[:30]}...")
 
         # Run pcst_fast
         result_nodes, result_edges = pcst_fast.pcst_fast(
@@ -244,13 +249,15 @@ class PCSTSolver:
                     selected = np.array([root], dtype=np.int64)
             else:
                 selected = np.where(result_nodes == root_label)[0]
-            print(f"  PCST returned labels format, "
-                  f"extracted {len(selected)} nodes in root cluster")
+            if self.verbose:
+                print(f"  PCST returned labels format, "
+                      f"extracted {len(selected)} nodes in root cluster")
         else:
             # Indices format: deduplicate and clamp to valid range
             selected = np.unique(result_nodes)
             selected = selected[(selected >= 0) & (selected < num_nodes)]
-            print(f"  PCST output: {len(selected)} nodes (indices format)")
+            if self.verbose:
+                print(f"  PCST output: {len(selected)} nodes (indices format)")
 
         # Always include root node in result
         if root not in selected:
@@ -268,21 +275,22 @@ class PCSTSolver:
 
     def _bfs_fallback(self, G: nx.DiGraph, seed_nodes: List[str],
                       root_entities: List[str] = None) -> nx.DiGraph:
-        """BFS expansion from topic entity (or highest-degree seed) as PCST fallback."""
-        G_undirected = self._get_undirected(G)
+        """BFS expansion from topic entity (or highest-degree seed) as PCST fallback.
 
+        Traverses both edge directions without creating an undirected copy.
+        """
         # Prefer topic entity as BFS root, fall back to highest-degree seed
         best_seed = None
         if root_entities:
             for entity in root_entities:
-                if entity in G_undirected:
+                if entity in G:
                     best_seed = entity
                     break
 
         if best_seed is None:
             best_seed = max(
-                [s for s in seed_nodes if s in G_undirected],
-                key=lambda s: G_undirected.degree(s),
+                [s for s in seed_nodes if s in G],
+                key=lambda s: G.degree(s),
                 default=None
             )
         if best_seed is None:
@@ -293,17 +301,17 @@ class PCSTSolver:
 
         while queue and len(visited) < self.budget:
             node = queue.popleft()
-            for neighbor in G_undirected.neighbors(node):
+            for neighbor in chain(G.successors(node), G.predecessors(node)):
                 if neighbor not in visited and len(visited) < self.budget:
                     visited.add(neighbor)
                     queue.append(neighbor)
 
         # Add remaining seeds and 1-hop neighbors if space
         for seed in seed_nodes:
-            if seed in G_undirected and seed not in visited:
+            if seed in G and seed not in visited:
                 if len(visited) < self.budget:
                     visited.add(seed)
-                    for neighbor in G_undirected.neighbors(seed):
+                    for neighbor in chain(G.successors(seed), G.predecessors(seed)):
                         if neighbor not in visited and len(visited) < self.budget:
                             visited.add(neighbor)
 

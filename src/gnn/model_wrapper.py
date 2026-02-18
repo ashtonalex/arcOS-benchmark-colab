@@ -4,6 +4,7 @@ High-level GNN model API for integration with the pipeline.
 
 from pathlib import Path
 from typing import Dict, List, Optional
+import gc
 import torch
 import numpy as np
 from torch_geometric.data import DataLoader
@@ -109,12 +110,18 @@ class GNNModel:
                 val_pyg_data = load_checkpoint(val_data_path, format="pickle")
             else:
                 print("  Converting dataset to PyG format (this may take a while)...")
-                train_pyg_data = cls._prepare_training_data(
-                    train_data, retriever, converter, config
-                )
-                val_pyg_data = cls._prepare_training_data(
-                    val_data, retriever, converter, config
-                )
+                # Suppress per-example PCST output to avoid flooding cell output
+                old_verbose = retriever.pcst_solver.verbose
+                retriever.pcst_solver.verbose = False
+                try:
+                    train_pyg_data = cls._prepare_training_data(
+                        train_data, retriever, converter, config
+                    )
+                    val_pyg_data = cls._prepare_training_data(
+                        val_data, retriever, converter, config
+                    )
+                finally:
+                    retriever.pcst_solver.verbose = old_verbose
 
                 print("  Saving converted data to checkpoints...")
                 save_checkpoint(train_pyg_data, train_data_path, format="pickle")
@@ -181,7 +188,7 @@ class GNNModel:
         pyg_data_list = []
         skipped_no_answer = 0
 
-        for example in tqdm(dataset, desc="Converting to PyG"):
+        for idx, example in enumerate(tqdm(dataset, desc="Converting to PyG")):
             question = example["question"]
             answer_entities = example.get("a_entity", [])
             if isinstance(answer_entities, str):
@@ -213,6 +220,10 @@ class GNNModel:
             except Exception as e:
                 print(f"Warning: Failed to process example '{question}': {e}")
                 continue
+
+            # Periodic GC to release intermediate allocations
+            if idx % 200 == 0 and idx > 0:
+                gc.collect()
 
         if skipped_no_answer > 0:
             total = skipped_no_answer + len(pyg_data_list)
