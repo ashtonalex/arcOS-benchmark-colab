@@ -416,11 +416,11 @@ class PCSTSolver:
         if not edges:
             return G.subgraph([s for s in seed_nodes if s in G]).copy()
 
-        # pcst_fast C extension reads edges as int32 — using int64 causes a
-        # dtype mismatch where each int64 value is misread as two int32 values,
-        # making every edge appear as (value, 0). The root (if not at index 0)
-        # ends up with no edges and PCST returns only the root node.
-        edges_array = np.array(edges, dtype=np.int32)
+        # Update for 64-bit Linux/Colab environment:
+        # The pcst_fast extension built for this platform appears to handle 64-bit integers
+        # correctly, or at least requires consistent 64-bit types to avoid return value corruption.
+        # Forcing int32 caused the solver to run correctly but return an array of zeros.
+        edges_array = np.array(edges, dtype=np.int64)
 
         # Edge costs: uniform or query-aware
         if (self.edge_weight_alpha > 0
