@@ -69,14 +69,20 @@ class BenchmarkConfig:
     pcst_cost: float = 0.015  # Edge cost for PCST. With cosine sim prizes (0-1),
                               # 0.015 allows relay chains of ~8 hops to a 0.12-prize node.
                               # Was 0.10 but that made multi-hop paths unprofitable.
-    pcst_pruning: str = "gw"  # PCST pruning strategy: 'none', 'gw', or 'strong'
+    pcst_pruning: str = "none"  # PCST pruning strategy: 'none', 'gw', or 'strong'.
+                                # 'gw' aggressively prunes relay nodes whose individual prize
+                                # (0) < edge cost, stranding prized nodes behind zero-prize
+                                # chains even when the full path is profitable. Use 'none' to
+                                # keep the raw GW optimal tree, then trim to budget by prize.
     pcst_edge_weight_alpha: float = 0.5  # Query-aware edge cost scaling [0,1]. 0=uniform costs (default)
     pcst_bridge_components: bool = True  # Bridge disconnected PCST components via shortest paths
     pcst_bridge_max_hops: int = 6  # Max relay hops when bridging disconnected components
-    pcst_existence_prize: float = 0.005  # Small base prize for relay nodes in root component.
-                                         # Prevents GW pruning from stranding prized nodes behind
-                                         # zero-prize relay chains. Must be << pcst_cost so relay
-                                         # nodes are only kept when bridging high-prize targets.
+    pcst_existence_prize: float = 0.0   # Small base prize for ALL relay nodes (0 = disabled).
+                                        # When > 0, all nodes are scored and the optimal PCST
+                                        # solution becomes the entire component (non-selective).
+                                        # Keep at 0 so PCST selects only semantically prized
+                                        # nodes (cosine sim >= local_prize_threshold) plus the
+                                        # relay paths connecting them to root.
 
     # ========== GNN (Phase 3) ==========
     gnn_hidden_dim: int = 256
