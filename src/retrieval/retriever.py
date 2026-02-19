@@ -151,6 +151,7 @@ class Retriever:
                 query_embedding=query_embedding,
                 relation_embeddings=self.relation_embeddings,
                 entity_embeddings=self.entity_embeddings,
+                question=question,
             )
         except Exception as e:
             print(f"⚠ PCST extraction failed: {e}, using BFS fallback")

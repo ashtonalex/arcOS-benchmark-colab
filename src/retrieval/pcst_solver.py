@@ -24,6 +24,8 @@ from itertools import chain
 import networkx as nx
 import numpy as np
 from collections import deque
+import re
+
 
 
 class PCSTSolver:
@@ -85,6 +87,7 @@ class PCSTSolver:
         query_embedding: Optional[np.ndarray] = None,
         relation_embeddings: Optional[Dict[str, np.ndarray]] = None,
         entity_embeddings: Optional[Dict[str, np.ndarray]] = None,
+        question: str = None,
     ) -> nx.DiGraph:
         """
         Extract connected subgraph using PCST.
@@ -130,14 +133,16 @@ class PCSTSolver:
         root_node = self._pick_root(local_graph, valid_seeds, root_entities, prizes)
         if self.verbose:
             print(f"  Selected root: {root_node}")
-        pcst_graph, n_components = self._root_component(local_graph, root_node)
+        
+        # MODIFIED: Use the full local graph instead of just the root's component.
+        # This allows us to bridge disjoint components via "virtual edges" later.
+        pcst_graph = local_graph
+        n_components = nx.number_weakly_connected_components(pcst_graph)
 
-        # Step 3: Compute local prizes — score nodes in root's component
-        #   by cosine similarity to query using entity embeddings.
-        #   This is critical: k-NN prizes are from global search and may
-        #   all be in disconnected components unreachable from root.
+        # Step 3: Compute local prizes
         local_prizes = self._compute_local_prizes(
-            pcst_graph, prizes, query_embedding, entity_embeddings)
+            pcst_graph, prizes, query_embedding, entity_embeddings,
+            question=question)
 
         if self.verbose:
             global_in_comp = sum(1 for n in prizes if n in pcst_graph)
@@ -153,7 +158,7 @@ class PCSTSolver:
                   f"{local_semantic} local (query-entity sim) + "
                   f"{existence_only} existence in root component")
 
-        # Step 4: PCST on root's component
+        # Step 4: PCST on localized graph (with virtual edges if needed)
         try:
             subgraph = self._pcst_extract(pcst_graph, valid_seeds, local_prizes,
                                           root_entities=root_entities,
@@ -325,6 +330,7 @@ class PCSTSolver:
         global_prizes: Dict[str, float],
         query_embedding: Optional[np.ndarray],
         entity_embeddings: Optional[Dict[str, np.ndarray]],
+        question: str = None,
     ) -> Dict[str, float]:
         """Compute prizes for nodes in root's component.
 
@@ -370,13 +376,35 @@ class PCSTSolver:
                     if cos_sim >= self.local_prize_threshold:
                         prizes[node] = cos_sim
 
-        # 3. Existence prize: give every unprized node in the component a
-        #    small base prize so PCST doesn't aggressively prune relay
-        #    nodes that connect high-value seeds.
+        # 3. Existence prize
         if self.existence_prize > 0:
             for node in comp_nodes:
                 if node not in prizes:
                     prizes[node] = self.existence_prize
+
+        # 4. Answer-Type boosting
+        if question:
+            q_lower = question.lower()
+            target_types = []
+            if any(x in q_lower for x in ['when', 'year', 'date', 'how old', 'birth']):
+                target_types.append('date')
+            if any(x in q_lower for x in ['how many', 'count', 'population', 'price', 'cost']):
+                target_types.append('number')
+
+            if target_types:
+                date_pattern = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+                # Simple number pattern: integer or strictly float, avoid "Model T"
+                number_pattern = re.compile(r'^-?\d+(\.\d+)?$')
+                
+                for node in comp_nodes:
+                    boost = 0.0
+                    if 'date' in target_types and date_pattern.match(node):
+                        boost = 0.5
+                    elif 'number' in target_types and number_pattern.match(node):
+                        boost = 0.5
+                    
+                    if boost > 0:
+                        prizes[node] = max(prizes.get(node, 0.0), boost)
 
         return prizes
 
@@ -441,7 +469,7 @@ class PCSTSolver:
             if node in node_to_idx:
                 prize_array[node_to_idx[node]] = max(score, 0.0)
 
-        # Root selection
+        # Root selection and Virtual Edges
         valid_seeds_in_local = [s for s in seed_nodes if s in node_to_idx]
         if not valid_seeds_in_local:
             return nx.DiGraph()
@@ -459,6 +487,45 @@ class PCSTSolver:
 
         root = int(node_to_idx[root_node])
 
+        # Virtual Edges: Connect root to top high-prize nodes in disjoint components
+        # Calculate components relative to undirected graph
+        # But for PCST, we pass a list of edges.
+        # If the graph is disconnected, pcst_fast sees disconnected components.
+        # We need to explicitly add edges.
+        
+        # Identify nodes with prizes that are NOT reachable from root?
+        # That requires a full traversal check. Faster to just add virtual edges
+        # to ALL high-prize nodes ( > cost used for virtual edge).
+        
+        virtual_edge_cost = self.cost * 10
+        virtual_edges = []
+        
+        # Only add virtual edges if they have a prize big enough to justify the cost
+        # (or at least close to it, so they are considered).
+        # We limit to top-K prize nodes to avoid exploding edge count.
+        top_prized = sorted(
+            [(n, p) for n, p in prizes.items() if n in node_to_idx and n != root_node],
+            key=lambda x: x[1], reverse=True
+        )[:20]  # Check top 20 candidates
+
+        for node_name, prize_val in top_prized:
+            target_idx = node_to_idx[node_name]
+            # Check if reachable? (Optional optimization, skipping for now for speed)
+            # Add virtual edge
+            virtual_edges.append((root, target_idx))
+
+        if virtual_edges:
+            if self.verbose:
+                print(f"  Adding {len(virtual_edges)} virtual edges to bridge components")
+            
+            # Extend edges_array and costs_array
+            v_edges_arr = np.array(virtual_edges, dtype=np.int64)
+            edges_array = np.vstack([edges_array, v_edges_arr])
+            
+            v_costs = np.full(len(virtual_edges), virtual_edge_cost, dtype=np.float64)
+            costs_array = np.concatenate([costs_array, v_costs])
+
+
         effective_pruning = pruning_override or self.pruning
         scored_nodes = int(np.count_nonzero(prize_array))
         if self.verbose:
@@ -468,23 +535,36 @@ class PCSTSolver:
                   f"root={root_node[:30]}...")
 
         # Run pcst_fast
-        result_nodes, result_edges = pcst_fast.pcst_fast(
-            edges_array, prize_array, costs_array,
-            root, 1, effective_pruning, 0
-        )
+        try:
+            result_nodes, result_edges = pcst_fast.pcst_fast(
+                edges_array, prize_array, costs_array,
+                root, 1, effective_pruning, 0
+            )
+        except Exception as e:
+            if self.verbose:
+                print(f"  pcst_fast crashed: {e}")
+            return nx.DiGraph()
+
         result_nodes = np.asarray(result_nodes, dtype=np.int64)
+        
+        if self.verbose:
+            print(f"  pcst_fast raw output: {len(result_nodes)} items")
 
         # Detect labels-vs-indices return format:
         # pcst_fast with root >= 0 should return indices, but some versions
         # return a labels array of length num_nodes.
+        
+        selected = np.array([], dtype=np.int64)
+        
         if len(result_nodes) == num_nodes:
             # Labels format: extract root's cluster
             root_label = int(result_nodes[root])
             if root_label < 0:
+                # Root assigned to -1 (unselected)? Try to find any positive cluster
                 positive = result_nodes[result_nodes >= 0]
                 if len(positive) > 0:
-                    root_label = int(
-                        np.bincount(positive.astype(np.intp)).argmax())
+                    # Pick largest cluster
+                    root_label = int(np.bincount(positive.astype(np.intp)).argmax())
                     selected = np.where(result_nodes == root_label)[0]
                 else:
                     selected = np.array([root], dtype=np.int64)
@@ -495,22 +575,38 @@ class PCSTSolver:
                       f"extracted {len(selected)} nodes in root cluster")
         else:
             # Indices format
-            selected = np.unique(result_nodes)
-            selected = selected[(selected >= 0) & (selected < num_nodes)]
+            # Sanity check: if we got indices, are they valid?
+            if len(result_nodes) > 0:
+                min_idx = np.min(result_nodes)
+                max_idx = np.max(result_nodes)
+                if min_idx < 0 or max_idx >= num_nodes:
+                    if self.verbose:
+                        print(f"  Warning: pcst_fast returned invalid indices "
+                              f"[{min_idx}, {max_idx}] for num_nodes={num_nodes}")
+                    # Filter invalid
+                    selected = result_nodes[(result_nodes >= 0) & (result_nodes < num_nodes)]
+                    selected = np.unique(selected)
+                else:
+                    selected = np.unique(result_nodes)
+            else:
+                selected = np.array([], dtype=np.int64)
+
             if self.verbose:
                 print(f"  PCST output: {len(selected)} nodes (indices format)")
 
         # Always include root
         if root not in selected:
             selected = np.append(selected, root)
-
-        # Map indices back to node names
-        selected_names = [nodes[i] for i in selected
-                          if 0 <= i < num_nodes]
-
+        
+        # Determine names
+        selected_names = []
+        for i in selected:
+            if 0 <= i < num_nodes:
+                selected_names.append(nodes[i])
+        
         if not selected_names:
             selected_names = valid_seeds_in_local
-
+            
         subgraph = G.subgraph(selected_names).copy()
         return subgraph
 
