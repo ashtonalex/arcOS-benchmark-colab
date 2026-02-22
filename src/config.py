@@ -110,8 +110,24 @@ class BenchmarkConfig:
     patience: int = 5
     gradient_clip: float = 1.0
 
+    # ========== Video Scene Graph (AGQA + Action Genome) ==========
+    agqa_subset_size: int = 50000
+    ag_frame_sample_rate: int = 3          # frames per second to sample
+    ag_num_object_classes: int = 36
+    ag_num_relation_types: int = 26
+
+    # ========== Per-Video Retrieval ==========
+    top_k_seeds: int = 10
+    pcst_temporal_cost_weight: float = 0.5 # temporal edge cost multiplier
+
+    # ========== HeteroGNN ==========
+    gnn_batch_size: int = 128
+    gnn_encoder_type: str = "hetero_gatv2"
+
     # ========== Evaluation (Phase 7) ==========
-    metrics: list = field(default_factory=lambda: ["exact_match", "f1", "hits@1"])
+    metrics: list = field(default_factory=lambda: [
+        "exact_match", "f1", "hits@1", "retrieval_hit_rate", "attention_precision"
+    ])
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -133,6 +149,12 @@ class BenchmarkConfig:
             raise ValueError(f"gnn_pooling must be 'attention' or 'mean', got {self.gnn_pooling}")
         if self.verbalization_format not in ["natural", "structured"]:
             raise ValueError(f"verbalization_format must be 'natural' or 'structured', got {self.verbalization_format}")
+        if self.agqa_subset_size < 1:
+            raise ValueError(f"agqa_subset_size must be positive, got {self.agqa_subset_size}")
+        if self.ag_frame_sample_rate < 1:
+            raise ValueError(f"ag_frame_sample_rate must be positive, got {self.ag_frame_sample_rate}")
+        if self.top_k_seeds < 1:
+            raise ValueError(f"top_k_seeds must be positive, got {self.top_k_seeds}")
 
     def print_summary(self):
         """Print human-readable configuration summary."""
