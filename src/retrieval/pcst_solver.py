@@ -444,11 +444,13 @@ class PCSTSolver:
         if not edges:
             return G.subgraph([s for s in seed_nodes if s in G]).copy()
 
-        # Update for 64-bit Linux/Colab environment:
-        # The pcst_fast extension built for this platform appears to handle 64-bit integers
-        # correctly, or at least requires consistent 64-bit types to avoid return value corruption.
-        # Forcing int32 caused the solver to run correctly but return an array of zeros.
-        edges_array = np.array(edges, dtype=np.int64)
+        # Update for pcst_fast compatibility:
+        # Standard pcst_fast (and many pybind11 wrappers) expect int32/int64 based on compilation.
+        # If int64 produced garbage (169 items collapsing to 1 node), it suggests a type mismatch
+        # where the C++ side read zeros/garbage. Reverting to int32 as a fix.
+        # Original comment about "Forcing int32 caused... zeros" might have been environment-specific
+        # or related to a different version. Given current failure, we swap to int32.
+        edges_array = np.array(edges, dtype=np.int32)
 
         # Edge costs: uniform or query-aware
         if (self.edge_weight_alpha > 0
@@ -519,7 +521,7 @@ class PCSTSolver:
                 print(f"  Adding {len(virtual_edges)} virtual edges to bridge components")
             
             # Extend edges_array and costs_array
-            v_edges_arr = np.array(virtual_edges, dtype=np.int64)
+            v_edges_arr = np.array(virtual_edges, dtype=np.int32)
             edges_array = np.vstack([edges_array, v_edges_arr])
             
             v_costs = np.full(len(virtual_edges), virtual_edge_cost, dtype=np.float64)
@@ -549,6 +551,12 @@ class PCSTSolver:
         
         if self.verbose:
             print(f"  pcst_fast raw output: {len(result_nodes)} items")
+            if len(result_nodes) > 0:
+                print(f"  Sample raw output: {result_nodes[:20]}")
+                unique_sample = np.unique(result_nodes)
+                print(f"  Unique values in output: {len(unique_sample)}")
+                if len(unique_sample) < 20:
+                     print(f"  Unique values: {unique_sample}")
 
         # Detect labels-vs-indices return format:
         # pcst_fast with root >= 0 should return indices, but some versions
