@@ -81,6 +81,20 @@ class SceneGraphBuilder:
             data["object", "temporal", "object"].edge_index = torch.zeros((2, 0), dtype=torch.long)
             data["object", "temporal", "object"].edge_attr = torch.zeros((0, 2), dtype=torch.float32)
 
+        # Store human-readable names for SceneVerbalizer
+        data.object_names = [n[2] for n in node_list]
+
+        # Store spatial predicates (one per spatial edge)
+        spatial_predicates = []
+        for frame in frames:
+            fid = frame["frame_id"]
+            for rel in frame["relations"]:
+                src_key = (fid, rel["subject_id"])
+                dst_key = (fid, rel["object_id"])
+                if src_key in node_index_map and dst_key in node_index_map:
+                    spatial_predicates.append(rel.get("predicate", "related_to"))
+        data.spatial_predicates = spatial_predicates
+
         data.video_id = ag_annotations["video_id"]
         data.num_frames = len(frames)
         return data

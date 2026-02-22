@@ -150,7 +150,8 @@ src/
 ├── data/
 │   ├── dataset_loader.py # RoGWebQSPLoader class (Freebase KG)
 │   ├── graph_builder.py  # GraphBuilder class (NetworkX, Freebase)
-│   ├── agqa_loader.py    # AGQALoader class (video QA)
+│   ├── agqa_loader.py    # AGQALoader class (video QA, download, split)
+│   ├── ag_converter.py   # AG annotation converter (pivot relations to pairwise tuples)
 │   └── scene_graph_builder.py # SceneGraphBuilder (Action Genome → PyG HeteroData)
 ├── retrieval/
 │   ├── embeddings.py     # TextEmbedder (sentence-transformers)
@@ -163,6 +164,8 @@ src/
 ├── gnn/
 │   ├── encoder.py        # GATv2Encoder / GraphSAGEEncoder (homogeneous)
 │   ├── hetero_encoder.py # HeteroGATv2Encoder (HeteroConv, scene graphs)
+│   ├── hetero_trainer.py # HeteroGNNTrainer (training loop for HeteroGATv2)
+│   ├── hetero_model_wrapper.py # HeteroGNNModel high-level API
 │   ├── pooling.py        # Attention pooling
 │   ├── trainer.py        # GNN training loop
 │   ├── model_wrapper.py  # GNNModel high-level API
@@ -190,9 +193,18 @@ src/
 - `parse_sample(raw)` → Standardized QA dict
 - `get_unique_video_ids(samples)` → Set of video IDs
 - `subsample(samples)` → Randomly subsample to configured size
+- `download_agqa(target_dir)` → Download AGQA 2.0 balanced JSON files
+- `load_from_file(filepath)` → Load AGQA JSON, parse all entries
+- `split(samples, train_ratio, val_ratio)` → Deterministic split by video_id (no leakage)
+
+**`AGConverter`** (`src/data/ag_converter.py`)
+- `load_ag_annotations(pkl_path)` → Load Action Genome pickle
+- `convert_video(video_id, raw_annotations)` → Pivot AG relations to SceneGraphBuilder format
+- `convert_all(raw_annotations, video_ids)` → Batch convert multiple videos
 
 **`SceneGraphBuilder`** (`src/data/scene_graph_builder.py`)
 - `build(ag_annotations)` → PyG HeteroData with object nodes, spatial/temporal edges
+- Stores `data.object_names` and `data.spatial_predicates` for SceneVerbalizer
 - Supports optional embedder for class name encoding (falls back to random)
 
 **`GraphBuilder`** (`src/data/graph_builder.py`)
@@ -209,6 +221,17 @@ src/
 - Forward: HeteroData + query_embedding → (node_embeddings, attention_scores, graph_embedding)
 - Uses HeteroConv with per-edge-type GATv2Conv (spatial + temporal)
 - Query-conditioned input projection, residual + LayerNorm
+
+**`HeteroGNNTrainer`** (`src/gnn/hetero_trainer.py`)
+- Training loop for HeteroGATv2Encoder with focal loss
+- `train(train_data, val_data)` → Training history
+- `save_checkpoint(path)` / `load_checkpoint(path)`
+- Early stopping with patience, LR scheduling
+
+**`HeteroGNNModel`** (`src/gnn/hetero_model_wrapper.py`)
+- `build_from_checkpoint_or_train(config, retriever, train_samples, val_samples, scene_graphs)` → Factory
+- `encode(subgraph, question)` → (node_embeddings, attention_scores, graph_embedding)
+- `set_embedder(embedder)` → Set text embedder for inference
 
 **`SceneVerbalizer`** (`src/verbalization/scene_verbalizer.py`)
 - `verbalize(data, attention_scores)` → Attention-ranked triple text
@@ -302,18 +325,22 @@ The project follows an 8-phase roadmap (see `docs/ROADMAP.md`):
 
 Parallel implementation replacing Freebase KG with video scene graphs:
 
-- [x] Config: Video scene graph fields in BenchmarkConfig
-- [x] AGQA Loader: Parse and subsample AGQA QA pairs
-- [x] Scene Graph Builder: Action Genome → PyG HeteroData (object nodes, spatial + temporal edges)
+- [x] Config: Video scene graph fields in BenchmarkConfig (+ ag_annotations_dir, agqa_data_dir)
+- [x] AGQA Loader: Parse, subsample, download, load_from_file, split by video_id
+- [x] AG Converter: Pivot AG annotations to SceneGraphBuilder format
+- [x] Scene Graph Builder: Action Genome → PyG HeteroData (+ object_names, spatial_predicates)
 - [x] Video Index: Per-video FAISS for k-NN seed selection
 - [x] HeteroPCST: PCST adapter for HeteroData subgraph extraction
 - [x] Video Retriever: Orchestrates embed → k-NN → PCST pipeline
 - [x] HeteroGATv2 Encoder: HeteroConv with per-edge-type GATv2Conv
+- [x] HeteroGNN Trainer: Training loop with focal loss, early stopping
+- [x] HeteroGNN Model Wrapper: High-level API with checkpoint factory
 - [x] Scene Verbalizer: Attention-weighted triple formatting for LLM prompts
 - [x] Benchmark Evaluator: EM, F1, retrieval hit rate, attention precision
 - [x] Integration test: End-to-end smoke test with mock data
+- [x] Notebook: Rewritten for video scene graph pipeline (36 cells, Phases 0-5)
 
-**Current Status:** Video scene graph pipeline implemented, awaiting Colab validation
+**Current Status:** Video scene graph pipeline complete, notebook rewritten, awaiting Colab validation
 
 ## Validation and Testing
 

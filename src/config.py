@@ -115,6 +115,8 @@ class BenchmarkConfig:
     ag_frame_sample_rate: int = 3          # frames per second to sample
     ag_num_object_classes: int = 36
     ag_num_relation_types: int = 26
+    ag_annotations_dir: str = "/content/action_genome"
+    agqa_data_dir: str = "/content/agqa"
 
     # ========== Per-Video Retrieval ==========
     top_k_seeds: int = 10
@@ -178,6 +180,14 @@ class BenchmarkConfig:
         print(f"Num layers: {self.gnn_num_layers}")
         print(f"Num heads: {self.gnn_num_heads}")
         print(f"Pooling: {self.gnn_pooling}")
+        print("\n--- Video Scene Graph ---")
+        print(f"AGQA subset size: {self.agqa_subset_size}")
+        print(f"AG frame sample rate: {self.ag_frame_sample_rate}")
+        print(f"AG annotations dir: {self.ag_annotations_dir}")
+        print(f"AGQA data dir: {self.agqa_data_dir}")
+        print(f"Top-K seeds: {self.top_k_seeds}")
+        print(f"PCST temporal cost weight: {self.pcst_temporal_cost_weight}")
+        print(f"GNN encoder type: {self.gnn_encoder_type}")
         print("\n--- LLM ---")
         print(f"Model: {self.llm_model}")
         print(f"Provider: {self.llm_provider}")
