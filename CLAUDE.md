@@ -147,9 +147,30 @@ src/
 ├── utils/
 │   ├── seeds.py          # Determinism (set_seeds function)
 │   └── checkpoints.py    # Google Drive persistence
-└── data/
-    ├── dataset_loader.py # RoGWebQSPLoader class
-    └── graph_builder.py  # GraphBuilder class (NetworkX)
+├── data/
+│   ├── dataset_loader.py # RoGWebQSPLoader class (Freebase KG)
+│   ├── graph_builder.py  # GraphBuilder class (NetworkX, Freebase)
+│   ├── agqa_loader.py    # AGQALoader class (video QA)
+│   └── scene_graph_builder.py # SceneGraphBuilder (Action Genome → PyG HeteroData)
+├── retrieval/
+│   ├── embeddings.py     # TextEmbedder (sentence-transformers)
+│   ├── faiss_index.py    # EntityIndex (FAISS, Freebase pipeline)
+│   ├── pcst_solver.py    # PCSTSolver (Freebase pipeline)
+│   ├── retriever.py      # Retriever orchestration (Freebase pipeline)
+│   ├── video_index.py    # VideoIndex (per-video FAISS for scene graphs)
+│   ├── hetero_pcst.py    # HeteroPCST (PCST for PyG HeteroData)
+│   └── video_retriever.py # VideoRetriever orchestration (scene graph pipeline)
+├── gnn/
+│   ├── encoder.py        # GATv2Encoder / GraphSAGEEncoder (homogeneous)
+│   ├── hetero_encoder.py # HeteroGATv2Encoder (HeteroConv, scene graphs)
+│   ├── pooling.py        # Attention pooling
+│   ├── trainer.py        # GNN training loop
+│   ├── model_wrapper.py  # GNNModel high-level API
+│   └── data_utils.py     # PyG data conversion utilities
+├── verbalization/
+│   └── scene_verbalizer.py # SceneVerbalizer (attention-weighted triple formatting)
+└── evaluation/
+    └── benchmark.py      # BenchmarkEvaluator (EM, F1, hit rate, attention precision)
 ```
 
 ### Key Classes
@@ -158,17 +179,44 @@ src/
 - Manages all hyperparameters with validation
 - Properties: `checkpoint_dir`, `results_dir`
 - Methods: `get_checkpoint_path()`, `print_summary()`
+- Video scene graph fields: `agqa_subset_size`, `ag_frame_sample_rate`, `top_k_seeds`, `pcst_temporal_cost_weight`, `gnn_encoder_type`
 
 **`RoGWebQSPLoader`** (`src/data/dataset_loader.py`)
 - `load(dataset_name, split)` → DatasetDict or Dataset
 - `inspect_schema(dataset)` → Print schema and examples
 - `validate_split_counts(dataset)` → Verify expected sizes
 
+**`AGQALoader`** (`src/data/agqa_loader.py`)
+- `parse_sample(raw)` → Standardized QA dict
+- `get_unique_video_ids(samples)` → Set of video IDs
+- `subsample(samples)` → Randomly subsample to configured size
+
+**`SceneGraphBuilder`** (`src/data/scene_graph_builder.py`)
+- `build(ag_annotations)` → PyG HeteroData with object nodes, spatial/temporal edges
+- Supports optional embedder for class name encoding (falls back to random)
+
 **`GraphBuilder`** (`src/data/graph_builder.py`)
 - `build_from_triples(triples)` → NetworkX graph for single example
 - `build_unified_graph(dataset)` → Merged graph from all examples
 - `compute_graph_statistics(G)` → Comprehensive metrics
 - `validate_graph_size(G, min_nodes, min_edges)` → Size validation
+
+**`VideoRetriever`** (`src/retrieval/video_retriever.py`)
+- `retrieve(question, scene_graph)` → RetrievalResult (subgraph + metadata)
+- Orchestrates: embed query → per-video FAISS k-NN → PCST subgraph extraction
+
+**`HeteroGATv2Encoder`** (`src/gnn/hetero_encoder.py`)
+- Forward: HeteroData + query_embedding → (node_embeddings, attention_scores, graph_embedding)
+- Uses HeteroConv with per-edge-type GATv2Conv (spatial + temporal)
+- Query-conditioned input projection, residual + LayerNorm
+
+**`SceneVerbalizer`** (`src/verbalization/scene_verbalizer.py`)
+- `verbalize(data, attention_scores)` → Attention-ranked triple text
+- `verbalize_unweighted(data)` → Baseline verbalization (no GNN)
+
+**`BenchmarkEvaluator`** (`src/evaluation/benchmark.py`)
+- `exact_match`, `f1`, `retrieval_hit_rate`, `attention_precision`
+- `aggregate(results)` → Mean metrics across examples
 
 ### Utility Functions
 
@@ -229,10 +277,10 @@ The project follows an 8-phase roadmap (see `docs/ROADMAP.md`):
 1. **Environment & Data** ✓ COMPLETE
    - Colab setup, dataset loading, graph construction
 
-2. **Retrieval Pipeline** 🔜 NEXT
+2. **Retrieval Pipeline** ✓ COMPLETE
    - Sentence-Transformers embeddings, FAISS index, PCST extraction
 
-3. **GNN Encoder**
+3. **GNN Encoder** ✓ COMPLETE
    - GATv2/GraphSAGE implementation, attention pooling, training
 
 4. **Graph Verbalization**
@@ -250,7 +298,22 @@ The project follows an 8-phase roadmap (see `docs/ROADMAP.md`):
 8. **Hardening & Polish**
    - Error handling, logging, documentation
 
-**Current Status:** Phase 1 complete, ready for Phase 2
+### Video Scene Graph Pipeline (feat/video-scene-graph)
+
+Parallel implementation replacing Freebase KG with video scene graphs:
+
+- [x] Config: Video scene graph fields in BenchmarkConfig
+- [x] AGQA Loader: Parse and subsample AGQA QA pairs
+- [x] Scene Graph Builder: Action Genome → PyG HeteroData (object nodes, spatial + temporal edges)
+- [x] Video Index: Per-video FAISS for k-NN seed selection
+- [x] HeteroPCST: PCST adapter for HeteroData subgraph extraction
+- [x] Video Retriever: Orchestrates embed → k-NN → PCST pipeline
+- [x] HeteroGATv2 Encoder: HeteroConv with per-edge-type GATv2Conv
+- [x] Scene Verbalizer: Attention-weighted triple formatting for LLM prompts
+- [x] Benchmark Evaluator: EM, F1, retrieval hit rate, attention precision
+- [x] Integration test: End-to-end smoke test with mock data
+
+**Current Status:** Video scene graph pipeline implemented, awaiting Colab validation
 
 ## Validation and Testing
 
