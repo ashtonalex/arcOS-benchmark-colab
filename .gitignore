@@ -75,9 +75,6 @@ Thumbs.db
 *.swo
 *~
 
-# Action Genome annotations (large binary files)
-action_genome/
-
 # Benchmark results and data
 benchmark_results/
 *.csv
