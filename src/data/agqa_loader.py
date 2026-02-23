@@ -9,11 +9,13 @@ import random
 from src.config import BenchmarkConfig
 
 
-# AGQA 2.0 balanced split URLs (Stanford hosted)
-AGQA_URLS = {
-    "train": "https://storage.googleapis.com/agqa/AGQA2/Balanced/Train_Balanced.json",
-    "val": "https://storage.googleapis.com/agqa/AGQA2/Balanced/Val_Balanced.json",
-    "test": "https://storage.googleapis.com/agqa/AGQA2/Balanced/Test_Balanced.json",
+# AGQA 2.0 balanced dataset (single ZIP archive from UW)
+AGQA_BALANCED_ZIP_URL = "https://agqa-decomp.cs.washington.edu/data/agqa2/AGQA_balanced.zip"
+
+# Expected JSON filenames inside the ZIP (case-insensitive matching used)
+AGQA_SPLIT_PATTERNS = {
+    "train": "train",
+    "test": "test",
 }
 
 
@@ -45,30 +47,58 @@ class AGQALoader:
     def download_agqa(target_dir: str, splits: Optional[List[str]] = None) -> Dict[str, Path]:
         """Download AGQA 2.0 balanced JSON files.
 
+        Downloads a single ZIP archive from the official UW hosting,
+        extracts it, and maps split names to the JSON files found inside.
+
         Args:
-            target_dir: Directory to save downloaded files.
-            splits: Which splits to download. Defaults to all.
+            target_dir: Directory to save downloaded/extracted files.
+            splits: Which splits to return. Defaults to all found.
 
         Returns:
-            Dict mapping split name to local file path.
+            Dict mapping split name to local JSON file path.
         """
         import urllib.request
 
         target = Path(target_dir)
         target.mkdir(parents=True, exist_ok=True)
-        splits = splits or list(AGQA_URLS.keys())
+
+        # Check if JSON files already exist
+        existing = list(target.glob("*.json"))
+        if not existing:
+            zip_path = target / "AGQA_balanced.zip"
+            if not zip_path.exists():
+                print(f"  Downloading AGQA 2.0 balanced ZIP...")
+                urllib.request.urlretrieve(AGQA_BALANCED_ZIP_URL, str(zip_path))
+                print(f"  Downloaded ({zip_path.stat().st_size / 1e6:.0f} MB)")
+
+            print(f"  Extracting...")
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(target)
+            zip_path.unlink()  # Clean up ZIP
+            existing = list(target.glob("**/*.json"))
+            # Flatten: move any nested JSONs to target_dir
+            for f in existing:
+                if f.parent != target:
+                    dest = target / f.name
+                    f.rename(dest)
+            existing = list(target.glob("*.json"))
+            print(f"  Extracted {len(existing)} JSON files")
+
+        # Map split names to files by matching filename patterns
         paths = {}
-        for split in splits:
-            url = AGQA_URLS[split]
-            filename = url.split("/")[-1]
-            local_path = target / filename
-            if local_path.exists():
-                print(f"  {split}: already exists at {local_path}")
-            else:
-                print(f"  {split}: downloading from {url} ...")
-                urllib.request.urlretrieve(url, str(local_path))
-                print(f"  {split}: saved to {local_path}")
-            paths[split] = local_path
+        for json_file in sorted(existing):
+            name_lower = json_file.stem.lower()
+            for split, pattern in AGQA_SPLIT_PATTERNS.items():
+                if pattern in name_lower:
+                    paths[split] = json_file
+                    break
+
+        if splits:
+            paths = {k: v for k, v in paths.items() if k in splits}
+
+        for split, path in paths.items():
+            print(f"  {split}: {path.name} ({path.stat().st_size / 1e6:.1f} MB)")
+
         return paths
 
     def load_from_file(self, filepath: str) -> List[Dict[str, Any]]:
