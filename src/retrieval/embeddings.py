@@ -26,14 +26,18 @@ _SKIP_RELATION_PREFIXES = (
 class TextEmbedder:
     """Generates sentence embeddings for entities, relations, and queries."""
 
-    def __init__(self, model_name: str, device: str = "cuda"):
+    def __init__(self, model_name, device: str = "cuda"):
         """
         Load Sentence-Transformer model.
 
         Args:
-            model_name: HuggingFace model identifier
+            model_name: HuggingFace model identifier string, or a BenchmarkConfig
+                        whose .embedding_model attribute provides the model name.
             device: "cuda" or "cpu"
         """
+        # Accept BenchmarkConfig objects by extracting the model name
+        if not isinstance(model_name, str):
+            model_name = model_name.embedding_model
         # Auto-detect device if cuda requested but not available
         if device == "cuda" and not torch.cuda.is_available():
             print("⚠ CUDA not available, falling back to CPU for embeddings")

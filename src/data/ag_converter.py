@@ -59,15 +59,17 @@ def convert_video(
         Annotation dict ready for SceneGraphBuilder.build().
     """
     # Collect frames belonging to this video
-    prefix = video_id + "/"
+    # AG keys use "{video_id}.mp4/" prefix (e.g., "001YG.mp4/000089.png")
+    prefix = video_id + ".mp4/"
     video_frames = sorted(
         [k for k in raw_annotations.keys() if k.startswith(prefix)]
     )
 
     if not video_frames:
-        # Try without slash prefix (some AG versions use different key format)
+        # Fallback: try without .mp4 extension
+        prefix_bare = video_id + "/"
         video_frames = sorted(
-            [k for k in raw_annotations.keys() if video_id in k]
+            [k for k in raw_annotations.keys() if k.startswith(prefix_bare)]
         )
 
     # Sample frames
