@@ -62,8 +62,10 @@ class AGQALoader:
         target = Path(target_dir)
         target.mkdir(parents=True, exist_ok=True)
 
-        # Check if JSON files already exist
-        existing = list(target.glob("*.json"))
+        # Check if data files already exist (JSON or TXT)
+        existing = list(target.glob("*.json")) + list(target.glob("*.txt"))
+        # Filter to only QA data files (not class lists etc.)
+        existing = [f for f in existing if f.stat().st_size > 1_000_000]
         if not existing:
             zip_path = target / "AGQA_balanced.zip"
             if not zip_path.exists():
@@ -73,24 +75,32 @@ class AGQALoader:
 
             print(f"  Extracting...")
             with zipfile.ZipFile(zip_path, "r") as zf:
+                names = zf.namelist()
+                print(f"  ZIP contents: {names[:20]}")
                 zf.extractall(target)
             zip_path.unlink()  # Clean up ZIP
-            existing = list(target.glob("**/*.json"))
-            # Flatten: move any nested JSONs to target_dir
-            for f in existing:
-                if f.parent != target:
-                    dest = target / f.name
-                    f.rename(dest)
-            existing = list(target.glob("*.json"))
-            print(f"  Extracted {len(existing)} JSON files")
+
+            # Flatten: move any nested files to target_dir
+            for pattern in ("**/*.json", "**/*.txt"):
+                for f in target.glob(pattern):
+                    if f.parent != target:
+                        dest = target / f.name
+                        if not dest.exists():
+                            f.rename(dest)
+
+            existing = list(target.glob("*.json")) + list(target.glob("*.txt"))
+            existing = [f for f in existing if f.stat().st_size > 1_000_000]
+            print(f"  Extracted {len(existing)} data files")
+            for f in sorted(existing):
+                print(f"    {f.name} ({f.stat().st_size / 1e6:.1f} MB)")
 
         # Map split names to files by matching filename patterns
         paths = {}
-        for json_file in sorted(existing):
-            name_lower = json_file.stem.lower()
+        for data_file in sorted(existing):
+            name_lower = data_file.stem.lower()
             for split, pattern in AGQA_SPLIT_PATTERNS.items():
                 if pattern in name_lower:
-                    paths[split] = json_file
+                    paths[split] = data_file
                     break
 
         if splits:
