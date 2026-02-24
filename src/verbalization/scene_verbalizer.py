@@ -72,8 +72,8 @@ class SceneVerbalizer:
         lines = []
         for i, (t, score) in enumerate(scored_triples, 1):
             if t["predicate"] == "appears_across_frames":
-                line = f"{i}. {t['subject']} {t['object']}"
+                line = f"{i}. [{score:.2f}] {t['subject']} {t['object']}"
             else:
-                line = f"{i}. {t['subject']} {t['predicate']} {t['object']} (frame {t['frame']})"
+                line = f"{i}. [{score:.2f}] {t['subject']} {t['predicate']} {t['object']} (frame {t['frame']})"
             lines.append(line)
         return "\n".join(lines)
