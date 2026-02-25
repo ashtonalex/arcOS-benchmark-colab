@@ -40,7 +40,7 @@ Always clear these environment variables before installing uv or any dependencie
 ### Local Testing (No GPU Required)
 
 ```bash
-python test_phase1_imports.py
+python scripts/test_phase1_imports.py
 ```
 
 This validates all module imports and basic functionality without requiring Colab or GPU.
@@ -174,6 +174,26 @@ src/
 │   └── scene_verbalizer.py # SceneVerbalizer (attention-weighted triple formatting)
 └── evaluation/
     └── benchmark.py      # BenchmarkEvaluator (EM, F1, hit rate, attention precision)
+
+tests/
+├── reproduce_pcst_issue.py     # PCST int32 regression reproduction script
+├── test_agqa_loader.py
+├── test_benchmark.py
+├── test_config.py
+├── test_hetero_encoder.py
+├── test_hetero_pcst.py         # includes int32 dtype + verbose logging tests
+├── test_integration_pipeline.py
+├── test_scene_graph_builder.py
+├── test_scene_verbalizer.py
+├── test_video_index.py
+└── test_video_retriever.py
+
+scripts/
+├── test_phase1_imports.py      # Validate Phase 1 imports locally (no GPU)
+├── test_phase2_imports.py      # Validate Phase 2 imports locally
+├── test_phase3_imports.py      # Validate Phase 3 imports locally
+├── delete_checkpoints.py       # Remove Drive checkpoints
+└── update_notebook_cell1.py   # Update notebook cell 1 content
 ```
 
 ### Key Classes
@@ -197,10 +217,11 @@ src/
 - `load_from_file(filepath)` → Load AGQA JSON, parse all entries
 - `split(samples, train_ratio, val_ratio)` → Deterministic split by video_id (no leakage)
 
-**`AGConverter`** (`src/data/ag_converter.py`)
+**`ag_converter`** (`src/data/ag_converter.py`)
 - `load_ag_annotations(pkl_path)` → Load Action Genome pickle
-- `convert_video(video_id, raw_annotations)` → Pivot AG relations to SceneGraphBuilder format
-- `convert_all(raw_annotations, video_ids)` → Batch convert multiple videos
+- `convert_video(video_id, raw_annotations, frame_sample_rate, class_map, iou_threshold)` → Pivot AG relations to SceneGraphBuilder format; tracks objects across frames via IoU-based Hungarian matching
+- `convert_all(raw_annotations, video_ids, frame_sample_rate, class_map)` → Batch convert multiple videos
+- Internal: `_compute_iou()`, `_match_objects_across_frames()`, `_linear_sum_assignment()` (Hungarian with scipy fallback)
 
 **`SceneGraphBuilder`** (`src/data/scene_graph_builder.py`)
 - `build(ag_annotations)` → PyG HeteroData with object nodes, spatial/temporal edges
@@ -216,6 +237,11 @@ src/
 **`VideoRetriever`** (`src/retrieval/video_retriever.py`)
 - `retrieve(question, scene_graph)` → RetrievalResult (subgraph + metadata)
 - Orchestrates: embed query → per-video FAISS k-NN → PCST subgraph extraction
+
+**`HeteroPCST`** (`src/retrieval/hetero_pcst.py`)
+- `__init__(config, verbose=False)` → Initialize with BenchmarkConfig; `verbose=True` prints PCST diagnostics
+- `extract(data, prizes, root)` → Extract HeteroData subgraph via PCST
+- **Critical:** Edge arrays must be `int32` — Colab's `pcst_fast` C++ build requires this; passing `int64` causes garbage reads and only 1-node output
 
 **`HeteroGATv2Encoder`** (`src/gnn/hetero_encoder.py`)
 - Forward: HeteroData + query_embedding → (node_embeddings, attention_scores, graph_embedding)
@@ -295,7 +321,7 @@ else:
 
 ## Implementation Phases
 
-The project follows an 8-phase roadmap (see `docs/ROADMAP.md`):
+The project follows an 8-phase roadmap:
 
 1. **Environment & Data** ✓ COMPLETE
    - Colab setup, dataset loading, graph construction
@@ -342,6 +368,12 @@ Parallel implementation replacing Freebase KG with video scene graphs:
 
 **Current Status:** Video scene graph pipeline complete, notebook rewritten, awaiting Colab validation
 
+### SARM Benchmark
+
+SARM (Spatio-temporal Adversarial Reasoning Methodology) is a benchmark framework for evaluating whether GNN-LLM pipelines make correct decisions for the right reasons. It uses adversarial counterfactual probing to test robustness of the retrieval and reasoning pipeline.
+
+- Specification: `docs/SARM/SARM-BENCHMARK.md`
+
 ## Validation and Testing
 
 ### Phase 1 Success Criteria
@@ -357,7 +389,9 @@ All validated in Cell 8 of the notebook:
 ### Local Validation
 
 ```bash
-python test_phase1_imports.py
+python scripts/test_phase1_imports.py
+python scripts/test_phase2_imports.py
+python scripts/test_phase3_imports.py
 ```
 
 Verifies imports, configuration validation, and basic graph construction without Colab.
@@ -421,8 +455,5 @@ results_path = config.get_results_path("metrics.json")
 
 ## Documentation
 
-- `docs/PRD.md` - Product requirements and architecture
-- `docs/ROADMAP.md` - 8-phase implementation plan
-- `docs/QUICKSTART.md` - Step-by-step Colab setup
-- `docs/PHASE1_COMPLETE.md` - Phase 1 implementation details
-- `docs/IMPLEMENTATION_SUMMARY.md` - Technical summary and decisions
+- `docs/SARM/SARM-BENCHMARK.md` - SARM benchmark spec (adversarial GNN-LLM evaluation)
+- `docs/plans/` - Implementation design docs and plans
