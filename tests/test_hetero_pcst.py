@@ -86,3 +86,34 @@ def test_hetero_pcst_verbose_logs_to_stdout(capsys):
     assert "edges" in captured.out
     assert "prizes" in captured.out
     assert "PCST output" in captured.out
+
+
+def test_hetero_pcst_edges_are_int32():
+    """Edge array passed to pcst_fast must be int32 (Colab pcst_fast build requirement).
+
+    This test patches pcst_fast.pcst_fast to capture the actual dtype of the edges
+    array passed in, so we can assert int32 even on Windows where int64 also works.
+    """
+    import unittest.mock as mock
+    config = BenchmarkConfig(pcst_budget=20)
+    solver = HeteroPCST(config)
+    data = make_chain_graph(20)
+    prizes = {0: 0.8, 10: 0.6}
+
+    captured_dtype = {}
+
+    def fake_pcst(edges, prizes, costs, root, n_clusters, pruning, verbosity):
+        captured_dtype["edges"] = edges.dtype
+        # Return a valid result: first two nodes
+        import numpy as np
+        return np.array([0, 1], dtype=np.int64), np.array([0], dtype=np.int64)
+
+    import src.retrieval.hetero_pcst as pcst_module
+    with mock.patch.object(pcst_module, "pcst_fast", create=True) as mock_lib:
+        pcst_module.HAS_PCST = True
+        mock_lib.pcst_fast.side_effect = fake_pcst
+        solver.extract(data, prizes)
+
+    assert captured_dtype["edges"] == np.int32, (
+        f"Expected int32 edges for pcst_fast compatibility, got {captured_dtype['edges']}"
+    )

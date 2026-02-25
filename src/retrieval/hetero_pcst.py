@@ -92,7 +92,7 @@ class HeteroPCST:
                 costs.append(cost)
                 edge_type_map.append(etype)
         return (
-            np.array(edges, dtype=np.int64) if edges else np.zeros((0, 2), dtype=np.int64),
+            np.array(edges, dtype=np.int32) if edges else np.zeros((0, 2), dtype=np.int32),
             np.array(costs, dtype=np.float64) if costs else np.zeros(0, dtype=np.float64),
             edge_type_map,
         )
@@ -102,7 +102,7 @@ class HeteroPCST:
             raise ImportError("pcst_fast not available")
         root_idx = root if root is not None else -1
         vertices, selected_edges = pcst_fast.pcst_fast(
-            edges.astype(np.int64), prizes, costs, root_idx, 1, self.pruning, 0,
+            edges.astype(np.int32), prizes, costs, root_idx, 1, self.pruning, 0,
         )
         if len(vertices) == 0:
             raise ValueError("PCST returned empty result")
