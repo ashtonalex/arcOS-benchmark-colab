@@ -109,8 +109,8 @@ def test_hetero_pcst_edges_are_int32():
         return np.array([0, 1], dtype=np.int64), np.array([0], dtype=np.int64)
 
     import src.retrieval.hetero_pcst as pcst_module
-    with mock.patch.object(pcst_module, "pcst_fast", create=True) as mock_lib:
-        pcst_module.HAS_PCST = True
+    with mock.patch.object(pcst_module, "pcst_fast", create=True) as mock_lib, \
+         mock.patch.object(pcst_module, "HAS_PCST", True):
         mock_lib.pcst_fast.side_effect = fake_pcst
         solver.extract(data, prizes)
 
