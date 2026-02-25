@@ -17,7 +17,35 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
-from scipy.optimize import linear_sum_assignment
+
+try:
+    from scipy.optimize import linear_sum_assignment as _scipy_lsa
+    _HAS_SCIPY = True
+except Exception:
+    _HAS_SCIPY = False
+
+
+def _linear_sum_assignment(cost_matrix):
+    """Hungarian assignment. Uses scipy if available, greedy fallback otherwise.
+
+    The greedy fallback is sufficient for the small matrices (1-5 rows) seen
+    in Action Genome per-class object tracking.
+    """
+    if _HAS_SCIPY:
+        return _scipy_lsa(cost_matrix)
+    n_rows, n_cols = cost_matrix.shape
+    row_ind, col_ind = [], []
+    used_cols: set = set()
+    for r in range(n_rows):
+        best_c, best_v = -1, float("inf")
+        for c in range(n_cols):
+            if c not in used_cols and cost_matrix[r, c] < best_v:
+                best_v, best_c = cost_matrix[r, c], c
+        if best_c >= 0:
+            row_ind.append(r)
+            col_ind.append(best_c)
+            used_cols.add(best_c)
+    return np.array(row_ind, dtype=np.intp), np.array(col_ind, dtype=np.intp)
 
 
 def load_ag_annotations(pkl_path: str) -> Dict:
@@ -121,7 +149,7 @@ def _match_objects_across_frames(
                 for pi, (_, p_bbox) in enumerate(prev_items):
                     cost[ci, pi] = -_compute_iou(c_bbox, p_bbox)
 
-            row_ind, col_ind = linear_sum_assignment(cost)
+            row_ind, col_ind = _linear_sum_assignment(cost)
 
             matched_curr: set = set()
             for r, c in zip(row_ind, col_ind):
