@@ -16,11 +16,12 @@ except ImportError:
 class HeteroPCST:
     """Extracts subgraphs from HeteroData using Prize-Collecting Steiner Tree."""
 
-    def __init__(self, config: BenchmarkConfig):
+    def __init__(self, config: BenchmarkConfig, verbose: bool = False):
         self.budget = config.pcst_budget
         self.cost = config.pcst_cost
         self.pruning = config.pcst_pruning
         self.temporal_cost_weight = config.pcst_temporal_cost_weight
+        self.verbose = verbose
 
     def extract(self, data: HeteroData, prizes: Dict[int, float], root: Optional[int] = None) -> HeteroData:
         """Extract a subgraph from HeteroData using PCST.
@@ -40,6 +41,19 @@ class HeteroPCST:
 
         edges, costs, edge_type_map = self._flatten_edges(data, num_nodes)
 
+        if self.verbose:
+            n_prized = int(np.count_nonzero(prize_array))
+            prized_vals = prize_array[prize_array > 0]
+            edge_counts = {et[1]: data[et].edge_index.shape[1] for et in data.edge_types}
+            if n_prized:
+                print(f"  [PCST] num_nodes={num_nodes}, edges={len(edges)} "
+                      f"({edge_counts}), prizes={n_prized} "
+                      f"(min={prized_vals.min():.3f}, max={prized_vals.max():.3f}, "
+                      f"mean={prized_vals.mean():.3f})")
+            else:
+                print(f"  [PCST] num_nodes={num_nodes}, edges={len(edges)} "
+                      f"({edge_counts}), prizes=0")
+
         if len(edges) == 0:
             return self._select_top_prized(data, prizes)
 
@@ -48,12 +62,19 @@ class HeteroPCST:
         except Exception:
             selected_nodes = self._bfs_fallback(edges, prizes, num_nodes)
 
+        if self.verbose:
+            print(f"  [PCST] PCST output: {len(selected_nodes)} nodes")
+
         if len(selected_nodes) > self.budget:
             scored = [(n, prize_array[n]) for n in selected_nodes]
             scored.sort(key=lambda x: x[1], reverse=True)
             selected_nodes = [n for n, _ in scored[:self.budget]]
 
         selected_nodes = sorted(set(selected_nodes))
+
+        if self.verbose:
+            print(f"  [PCST] final selected: {len(selected_nodes)} nodes")
+
         return self._slice_heterodata(data, selected_nodes)
 
     def _flatten_edges(self, data, num_nodes):

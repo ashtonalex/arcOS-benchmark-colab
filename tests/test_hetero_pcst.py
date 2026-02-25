@@ -72,3 +72,17 @@ def test_hetero_pcst_bfs_fallback():
     sub = solver.extract(data, prizes)
     assert sub["object"].num_nodes > 0
     assert sub["object"].num_nodes <= 5
+
+
+def test_hetero_pcst_verbose_logs_to_stdout(capsys):
+    """verbose=True prints PCST diagnostics without crashing."""
+    config = BenchmarkConfig(pcst_budget=10)
+    solver = HeteroPCST(config, verbose=True)
+    data = make_chain_graph(10)
+    prizes = {0: 0.8, 5: 0.6}
+    solver.extract(data, prizes)
+    captured = capsys.readouterr()
+    assert "nodes" in captured.out
+    assert "edges" in captured.out
+    assert "prizes" in captured.out
+    assert "PCST output" in captured.out
