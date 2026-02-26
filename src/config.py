@@ -131,6 +131,21 @@ class BenchmarkConfig:
         "exact_match", "f1", "hits@1", "retrieval_hit_rate", "attention_precision"
     ])
 
+    # ========== SARM Benchmark ==========
+    sarm_judge_models: list = field(default_factory=lambda: [
+        "stepfun/step-3.5-flash:free",
+        "stepfun/step-3.5-flash:free",
+        "stepfun/step-3.5-flash:free",
+    ])
+    sarm_inquisitor_generator_model: str = "stepfun/step-3.5-flash:free"
+    sarm_inquisitor_validator_model: str = "stepfun/step-3.5-flash:free"
+    sarm_probes_per_scenario: int = 5
+    sarm_runs_per_scenario: int = 3
+    sarm_judge_disagreement_threshold: float = 1.0
+    sarm_weights: dict = field(default_factory=lambda: {
+        "C": 0.40, "P": 0.30, "A": 0.20, "U": 0.10
+    })
+
     def __post_init__(self):
         """Validate configuration after initialization."""
         if self.seed < 0:
@@ -157,6 +172,15 @@ class BenchmarkConfig:
             raise ValueError(f"ag_frame_sample_rate must be positive, got {self.ag_frame_sample_rate}")
         if self.top_k_seeds < 1:
             raise ValueError(f"top_k_seeds must be positive, got {self.top_k_seeds}")
+        if self.sarm_probes_per_scenario < 1:
+            raise ValueError(f"sarm_probes_per_scenario must be >= 1, got {self.sarm_probes_per_scenario}")
+        if self.sarm_runs_per_scenario < 1:
+            raise ValueError(f"sarm_runs_per_scenario must be >= 1, got {self.sarm_runs_per_scenario}")
+        sarm_weight_sum = sum(self.sarm_weights.values())
+        if abs(sarm_weight_sum - 1.0) > 1e-6:
+            raise ValueError(f"sarm_weights must sum to 1.0, got {sarm_weight_sum}")
+        if len(self.sarm_judge_models) < 1:
+            raise ValueError("sarm_judge_models must have at least 1 model")
 
     def print_summary(self):
         """Print human-readable configuration summary."""
