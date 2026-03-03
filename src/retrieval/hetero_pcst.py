@@ -53,6 +53,19 @@ class HeteroPCST:
             else:
                 print(f"  [PCST] num_nodes={num_nodes}, edges={len(edges)} "
                       f"({edge_counts}), prizes=0")
+            print(f"[PCST-DEBUG] Nodes: {num_nodes} | Edges: {len(edges)}")
+            total_prizes = float(prize_array.sum())
+            total_costs = float(costs.sum()) if len(costs) > 0 else 0.0
+            print(f"[PCST-DEBUG] Total Prizes: {total_prizes:.4f} | Total Edge Costs: {total_costs:.4f}")
+            anchor = root if root is not None else int(np.argmax(prize_array))
+            p_anchor = float(prize_array[anchor])
+            if len(edges) > 0:
+                mask = (edges[:, 0] == anchor) | (edges[:, 1] == anchor)
+                for edge, c_ij in zip(edges[mask][:10], costs[mask][:10]):
+                    j = int(edge[1]) if int(edge[0]) == anchor else int(edge[0])
+                    p_j = float(prize_array[j])
+                    label = "FAIL (cost>prize)" if c_ij > p_j else "OK"
+                    print(f"  Node {anchor} Prize={p_anchor:.4f} | Edge→{j}: cost={c_ij:.4f} | Neighbor Prize={p_j:.4f} | {label}")
 
         if len(edges) == 0:
             return self._select_top_prized(data, prizes)
@@ -64,6 +77,17 @@ class HeteroPCST:
 
         if self.verbose:
             print(f"  [PCST] PCST output: {len(selected_nodes)} nodes")
+            if len(selected_nodes) == 1:
+                survivor = selected_nodes[0]
+                p_surv = float(prize_array[survivor])
+                print(f"[PCST-DEBUG] 1-node result! Survivor={survivor} Prize={p_surv:.4f}")
+                if len(edges) > 0:
+                    mask = (edges[:, 0] == survivor) | (edges[:, 1] == survivor)
+                    for edge, c_ij in zip(edges[mask][:10], costs[mask][:10]):
+                        j = int(edge[1]) if int(edge[0]) == survivor else int(edge[0])
+                        p_j = float(prize_array[j])
+                        label = "FAIL" if c_ij > p_j else "OK"
+                        print(f"  Survivor {survivor} (p={p_surv:.4f}) → Neighbor {j} (p={p_j:.4f}) cost={c_ij:.4f} | Break-even: {label}")
 
         if len(selected_nodes) > self.budget:
             scored = [(n, prize_array[n]) for n in selected_nodes]

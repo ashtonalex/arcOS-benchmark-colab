@@ -132,6 +132,7 @@ class BenchmarkConfig:
     ])
 
     # ========== SARM Benchmark ==========
+    sarm_eval_subset_size: int = 10
     sarm_judge_models: list = field(default_factory=lambda: [
         "stepfun/step-3.5-flash:free",
         "stepfun/step-3.5-flash:free",
@@ -172,6 +173,8 @@ class BenchmarkConfig:
             raise ValueError(f"ag_frame_sample_rate must be positive, got {self.ag_frame_sample_rate}")
         if self.top_k_seeds < 1:
             raise ValueError(f"top_k_seeds must be positive, got {self.top_k_seeds}")
+        if self.sarm_eval_subset_size < 1:
+            raise ValueError(f"sarm_eval_subset_size must be positive, got {self.sarm_eval_subset_size}")
         if self.sarm_probes_per_scenario < 1:
             raise ValueError(f"sarm_probes_per_scenario must be >= 1, got {self.sarm_probes_per_scenario}")
         if self.sarm_runs_per_scenario < 1:
