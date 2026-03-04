@@ -77,12 +77,12 @@ class BenchmarkConfig:
     pcst_edge_weight_alpha: float = 0.5  # Query-aware edge cost scaling [0,1]. 0=uniform costs (default)
     pcst_bridge_components: bool = True  # Bridge disconnected PCST components via shortest paths
     pcst_bridge_max_hops: int = 6  # Max relay hops when bridging disconnected components
-    pcst_existence_prize: float = 0.0   # Small base prize for ALL relay nodes (0 = disabled).
-                                        # When > 0, all nodes are scored and the optimal PCST
-                                        # solution becomes the entire component (non-selective).
-                                        # Keep at 0 so PCST selects only semantically prized
-                                        # nodes (cosine sim >= local_prize_threshold) plus the
-                                        # relay paths connecting them to root.
+    pcst_existence_prize: float = 0.01  # Small base prize for ALL relay nodes so PCST can
+                                        # justify traversing them to connect distant seeds.
+                                        # Without this, relay nodes have prize=0 and PCST prunes
+                                        # all multi-hop paths, yielding 1-node subgraphs.
+    pcst_prize_spread_factor: float = 0.25  # 1-hop neighbors of seed nodes get this fraction
+                                            # of the seed's prize as "stepping stone" incentive.
 
     # ========== GNN (Phase 3) ==========
     gnn_hidden_dim: int = 256

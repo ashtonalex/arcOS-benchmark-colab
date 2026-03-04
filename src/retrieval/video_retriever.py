@@ -43,12 +43,13 @@ class VideoRetriever:
         results = index.search(query_emb, k=self.config.top_k_seeds)
         seed_indices = [r[0] for r in results]
         prizes = {idx: score for idx, score in results}
+        root_node = seed_indices[0] if seed_indices else None
         pcst_used = True
         try:
-            subgraph = self.pcst.extract(scene_graph, prizes)
+            subgraph = self.pcst.extract(scene_graph, prizes, root=root_node)
         except Exception:
             pcst_used = False
-            subgraph = self.pcst.extract(scene_graph, prizes)
+            subgraph = self.pcst.extract(scene_graph, prizes, root=root_node)
         elapsed = (time.time() - start) * 1000
         total_edges = sum(subgraph[et].edge_index.shape[1] for et in subgraph.edge_types)
         return RetrievalResult(

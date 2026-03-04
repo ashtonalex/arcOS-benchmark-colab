@@ -21,6 +21,8 @@ class HeteroPCST:
         self.cost = config.pcst_cost
         self.pruning = config.pcst_pruning
         self.temporal_cost_weight = config.pcst_temporal_cost_weight
+        self.existence_prize = config.pcst_existence_prize
+        self.spread_factor = config.pcst_prize_spread_factor
         self.verbose = verbose
 
     def extract(self, data: HeteroData, prizes: Dict[int, float], root: Optional[int] = None) -> HeteroData:
@@ -40,6 +42,20 @@ class HeteroPCST:
                 prize_array[node_idx] = prize
 
         edges, costs, edge_type_map = self._flatten_edges(data, num_nodes)
+
+        # Step 1: Existence prizes — give relay nodes a small base prize
+        if self.existence_prize > 0:
+            for i in range(num_nodes):
+                if prize_array[i] == 0.0:
+                    prize_array[i] = self.existence_prize
+
+        # Step 2: Prize spreading — 1-hop neighbors of seeds get stepping-stone prizes
+        if self.spread_factor > 0 and len(edges) > 0:
+            prize_array = self._spread_prizes(prize_array, edges)
+
+        # Step 3: Auto-select root as highest-prize node
+        if root is None and num_nodes > 0:
+            root = int(np.argmax(prize_array))
 
         if self.verbose:
             n_prized = int(np.count_nonzero(prize_array))
@@ -100,6 +116,23 @@ class HeteroPCST:
             print(f"  [PCST] final selected: {len(selected_nodes)} nodes")
 
         return self._slice_heterodata(data, selected_nodes)
+
+    def _spread_prizes(self, prize_array, edges):
+        """Give 1-hop neighbors of prized nodes a fraction of the prize."""
+        boosted = prize_array.copy()
+        threshold = self.existence_prize if self.existence_prize > 0 else 0.0
+        prized_nodes = set(int(i) for i in np.where(prize_array > threshold)[0])
+        for src, dst in edges:
+            src_i, dst_i = int(src), int(dst)
+            if src_i in prized_nodes:
+                spread_val = prize_array[src_i] * self.spread_factor
+                if boosted[dst_i] < spread_val:
+                    boosted[dst_i] = spread_val
+            if dst_i in prized_nodes:
+                spread_val = prize_array[dst_i] * self.spread_factor
+                if boosted[src_i] < spread_val:
+                    boosted[src_i] = spread_val
+        return boosted
 
     def _flatten_edges(self, data, num_nodes):
         edges = []
