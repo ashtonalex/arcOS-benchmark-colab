@@ -78,6 +78,12 @@ class HeteroGNNTrainer:
 
     def train_epoch(self, train_data: List[dict]) -> Dict[str, float]:
         """Train for one epoch over list of (data, query_emb, labels) dicts."""
+        if not train_data:
+            raise ValueError(
+                "train_data is empty — no training examples survived preparation. "
+                "Check that object_names is preserved in HeteroPCST._slice_heterodata "
+                "and that scene graph answer nodes match sample answers."
+            )
         self.encoder.train()
         self.pred_head.train()
 
@@ -115,6 +121,8 @@ class HeteroGNNTrainer:
 
     def validate(self, val_data: List[dict]) -> Dict[str, float]:
         """Validate without backward pass."""
+        if not val_data:
+            raise ValueError("val_data is empty — no validation examples survived preparation.")
         self.encoder.eval()
         self.pred_head.eval()
 

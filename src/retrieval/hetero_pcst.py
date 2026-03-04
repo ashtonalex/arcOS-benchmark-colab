@@ -187,4 +187,23 @@ class HeteroPCST:
         sub.selected_nodes = torch.tensor(selected, dtype=torch.long)
         if hasattr(data, "video_id"):
             sub.video_id = data.video_id
+
+        # Preserve human-readable names needed by labeling and verbalization
+        if hasattr(data, "object_names") and data.object_names is not None:
+            sub.object_names = [data.object_names[i] for i in selected]
+
+        # Copy spatial_predicates (ordered by spatial edges in the original graph)
+        spatial_etype = ("object", "spatial_rel", "object")
+        if (
+            hasattr(data, "spatial_predicates")
+            and data.spatial_predicates
+            and spatial_etype in data.edge_types
+        ):
+            ei = data[spatial_etype].edge_index
+            kept = [
+                i for i in range(ei.shape[1])
+                if int(ei[0, i]) in selected_set and int(ei[1, i]) in selected_set
+            ]
+            sub.spatial_predicates = [data.spatial_predicates[i] for i in kept]
+
         return sub

@@ -84,6 +84,16 @@ class HeteroGNNModel:
                 val_pyg = cls._prepare_training_data(
                     val_samples, retriever, scene_graphs, config
                 )
+                if len(train_pyg) == 0:
+                    raise ValueError(
+                        f"No valid training examples found from {len(train_samples)} samples. "
+                        "This usually means object_names is missing from PCST subgraphs. "
+                        "Delete stale hetero_pyg_train.pkl / hetero_pyg_val.pkl from Drive and retry."
+                    )
+                if len(val_pyg) == 0:
+                    raise ValueError(
+                        f"No valid validation examples found from {len(val_samples)} samples."
+                    )
                 save_checkpoint(train_pyg, train_data_path, format="pickle")
                 save_checkpoint(val_pyg, val_data_path, format="pickle")
 
