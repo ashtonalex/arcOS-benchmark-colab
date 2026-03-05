@@ -103,7 +103,7 @@ class BenchmarkConfig:
     llm_temperature: float = 0.0
 
     # ========== Training (Phase 6) ==========
-    batch_size: int = 16
+    batch_size: int = 4
     learning_rate: float = 1e-4
     weight_decay: float = 1e-2
     num_epochs: int = 10
@@ -111,7 +111,7 @@ class BenchmarkConfig:
     gradient_clip: float = 1.0
 
     # ========== Video Scene Graph (AGQA + Action Genome) ==========
-    agqa_subset_size: int = 50000
+    agqa_subset_size: int = 500
     ag_frame_sample_rate: int = 3          # frames per second to sample
     ag_num_object_classes: int = 36
     ag_num_relation_types: int = 26
@@ -128,7 +128,7 @@ class BenchmarkConfig:
                                               # the small existence_prize.
 
     # ========== HeteroGNN ==========
-    gnn_batch_size: int = 128
+    gnn_batch_size: int = 16
     gnn_encoder_type: str = "hetero_gatv2"
 
     # ========== Evaluation (Phase 7) ==========
