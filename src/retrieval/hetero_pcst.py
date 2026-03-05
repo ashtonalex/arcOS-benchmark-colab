@@ -91,6 +91,22 @@ class HeteroPCST:
         except Exception:
             selected_nodes = self._bfs_fallback(edges, prizes, num_nodes)
 
+        # Min-size fallback: if PCST result is too small, retry then BFS
+        min_size = min(len([p for p in prizes.values() if p > 0]), 3)
+        if len(selected_nodes) < min_size:
+            if self.verbose:
+                print(f"  [PCST] Too few nodes ({len(selected_nodes)} < {min_size}), retrying with pruning='none'")
+            try:
+                selected_nodes = self._run_pcst(
+                    num_nodes, edges, costs, prize_array, root, pruning_override="none"
+                )
+            except Exception:
+                pass
+        if len(selected_nodes) < min_size:
+            if self.verbose:
+                print(f"  [PCST] Still too few ({len(selected_nodes)}), falling back to BFS")
+            selected_nodes = self._bfs_fallback(edges, prizes, num_nodes)
+
         if self.verbose:
             print(f"  [PCST] PCST output: {len(selected_nodes)} nodes")
             if len(selected_nodes) == 1:
@@ -154,12 +170,13 @@ class HeteroPCST:
             edge_type_map,
         )
 
-    def _run_pcst(self, num_nodes, edges, costs, prizes, root):
+    def _run_pcst(self, num_nodes, edges, costs, prizes, root, pruning_override=None):
         if not HAS_PCST:
             raise ImportError("pcst_fast not available")
         root_idx = root if root is not None else -1
+        pruning = pruning_override if pruning_override is not None else self.pruning
         vertices, selected_edges = pcst_fast.pcst_fast(
-            edges.astype(np.int32), prizes, costs, root_idx, 1, self.pruning, 0,
+            edges.astype(np.int32), prizes, costs, root_idx, 1, pruning, 0,
         )
         if len(vertices) == 0:
             raise ValueError("PCST returned empty result")

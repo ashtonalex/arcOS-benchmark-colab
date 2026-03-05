@@ -40,9 +40,17 @@ class VideoRetriever:
         query_emb = self.embedder.embed_texts([question])[0]
         index = VideoIndex(embedding_dim=self.config.embedding_dim)
         index.build(scene_graph)
-        results = index.search(query_emb, k=self.config.top_k_seeds)
-        seed_indices = [r[0] for r in results]
-        prizes = {idx: score for idx, score in results}
+
+        # Score ALL nodes via FAISS (mirrors PCSTSolver local prize computation)
+        num_nodes = scene_graph["object"].num_nodes
+        all_results = index.search(query_emb, k=num_nodes)
+
+        # Top-k seeds for metadata (seed_indices in RetrievalResult)
+        seed_indices = [r[0] for r in all_results[: self.config.top_k_seeds]]
+
+        # Only nodes above threshold get real prizes; rest get existence_prize via HeteroPCST
+        threshold = self.config.pcst_local_prize_threshold
+        prizes = {idx: score for idx, score in all_results if score >= threshold}
         root_node = seed_indices[0] if seed_indices else None
         pcst_used = True
         try:

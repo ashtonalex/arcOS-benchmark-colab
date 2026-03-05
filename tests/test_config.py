@@ -9,7 +9,10 @@ def test_video_scene_graph_config_defaults():
     assert config.ag_num_object_classes == 36
     assert config.ag_num_relation_types == 26
     assert config.top_k_seeds == 10
-    assert config.pcst_temporal_cost_weight == 0.5
+    assert config.pcst_temporal_cost_weight == 2.0
+    assert config.pcst_local_prize_threshold == 0.10
+    assert config.pcst_existence_prize == 0.005
+    assert config.pcst_prize_spread_factor == 0.0
     assert config.gnn_batch_size == 128
     assert config.gnn_encoder_type == "hetero_gatv2"
     assert "attention_precision" in config.metrics

@@ -77,12 +77,12 @@ class BenchmarkConfig:
     pcst_edge_weight_alpha: float = 0.5  # Query-aware edge cost scaling [0,1]. 0=uniform costs (default)
     pcst_bridge_components: bool = True  # Bridge disconnected PCST components via shortest paths
     pcst_bridge_max_hops: int = 6  # Max relay hops when bridging disconnected components
-    pcst_existence_prize: float = 0.01  # Small base prize for ALL relay nodes so PCST can
-                                        # justify traversing them to connect distant seeds.
-                                        # Without this, relay nodes have prize=0 and PCST prunes
-                                        # all multi-hop paths, yielding 1-node subgraphs.
-    pcst_prize_spread_factor: float = 0.25  # 1-hop neighbors of seed nodes get this fraction
-                                            # of the seed's prize as "stepping stone" incentive.
+    pcst_existence_prize: float = 0.005  # Small base prize for relay nodes. Must be < pcst_cost
+                                         # so relay nodes are individually unprofitable but can
+                                         # appear on profitable paths to high-prize nodes.
+    pcst_prize_spread_factor: float = 0.0  # Disabled: local cosine-similarity prizes (via
+                                           # pcst_local_prize_threshold) replace the synthetic
+                                           # spread heuristic that caused total-recall over-selection.
 
     # ========== GNN (Phase 3) ==========
     gnn_hidden_dim: int = 256
@@ -120,7 +120,12 @@ class BenchmarkConfig:
 
     # ========== Per-Video Retrieval ==========
     top_k_seeds: int = 10
-    pcst_temporal_cost_weight: float = 0.5 # temporal edge cost multiplier
+    pcst_temporal_cost_weight: float = 2.0  # temporal edges cost 2x spatial so PCST only
+                                            # includes temporal jumps when destination has
+                                            # sufficient prize (similarity > cost * weight).
+    pcst_local_prize_threshold: float = 0.10  # Min cosine similarity for a node to receive a
+                                              # real PCST prize. Nodes below threshold get only
+                                              # the small existence_prize.
 
     # ========== HeteroGNN ==========
     gnn_batch_size: int = 128
